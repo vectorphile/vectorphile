@@ -119,7 +119,7 @@ def apply_over_axes(func, arr, axes):
     return _ma.apply_over_axes(func, arr, axes)
 
 mask_rowcols = _ma.mask_rowcols
-shrink_mask = _ma.shrink_mask
+shrink_mask = getattr(_ma, 'shrink_mask', None)
 flatnotmasked_contiguous = _ma.flatnotmasked_contiguous
 flatnotmasked_edges = _ma.flatnotmasked_edges
 notmasked_contiguous = _ma.notmasked_contiguous

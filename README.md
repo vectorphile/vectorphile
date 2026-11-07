@@ -65,6 +65,26 @@ This is not a wrapper. Every module is a ground-up implementation, designed with
 | `vp.quantization` | quantize (INT8/INT4/FP16), QuantizedModel, MinMaxCalibrator, magnitude_prune |
 | `vp.amp` | autocast, GradScaler (Phase 2: real CUDA fp16/bf16) |
 | `vp.utils.data` | `Dataset`, `TensorDataset`, `DataLoader` with batching and shuffling |
+| `vp.backend` | 5-tier dispatch: Triton JIT → PyTorch CUDA → Numba CUDA → im2col+BLAS → NumPy |
+| `vp.tokenizers` | BPE, WordPiece, SentencePiece, CharacterTokenizer — zero external deps |
+| `vp.distributed` | DataParallel, DDP, GradientAccumulator, MixedPrecisionTrainer |
+| `vp.export` | ONNX, TorchScript, CoreML, SavedModel, GGUF (Q4_0/Q8_0), benchmark |
+| `vp.rl` | DQN/DoubleDQN/DuelingDQN, REINFORCE, A2C, PPO, SAC, TD3, PER, environments |
+| `vp.pretrained` | HuggingFace Hub download, safetensors parser, weight mappers for GPT-2/BERT/ViT/LLaMA |
+| `vp.metrics` | 25+ metrics: accuracy, BLEU, ROUGE-L, WER, NDCG, ECE, silhouette, ARI, NMI |
+| `vp.callbacks` | EarlyStopping, ModelCheckpoint, ReduceLROnPlateau, TensorBoardLogger, WandBLogger, LRFinder |
+| `vp.trainer` | PyTorch Lightning-style `Trainer` + `TrainableModel` base class |
+| `vp.text` | beam_search, nucleus_sampling, contrastive_search, speculative_decoding, chat templates, `TextGenerationPipeline` |
+| `vp.vision` | Compose, Resize, RandomCrop, ColorJitter, AugMix, ToTensor, Normalize, make_grid, extract_features |
+| `vp.data.datasets` | MNIST, CIFAR-10, TinyShakespeare, IMDb + DataLoader, samplers, random_split |
+| `vp.nn.lr_schedulers` | StepLR, CosineAnnealingLR, OneCycleLR, WarmupCosineDecay, PolynomialLR, get_scheduler |
+| `vp.nn.einops` | rearrange, reduce, repeat, pack, unpack, EinMix |
+| `vp.nn.hooks` | register_forward_hook, register_backward_hook, FeatureExtractor, GradientRecorder |
+| `vp.autograd` | Reverse-mode + second-order autodiff, `jacobian`, `hessian`, `vmap`, `checkpoint` |
+| `vp.nn.flash_attention` | Flash Attention 2 (tiled, O(N) memory), variable-length sequences |
+| `vp.nn.qat` | Quantization-aware training (straight-through estimator), prepare_qat / convert_qat |
+| `vp.optim` (advanced) | Lion, Sophia, Adan, CAME, Prodigy, ScheduleFreeAdamW |
+| `vp.nn.architectures` | CNN zoo (VGG/ResNet/DenseNet/EfficientNet), ViT/DeiT, Mamba/S4, VAE/DDPM/DCGAN, U-Net, GCN/GAT/GIN |
 
 ---
 
@@ -415,26 +435,40 @@ vectorphile/
 
 ## Roadmap
 
-### Phase 1 — Pure Python (current)
+### v0.1–0.2 — Core (complete)
 - Full tensor API with reverse-mode autodiff
-- Complete neural network layer set
-- All classical ML algorithms
-- DataFrame with full GroupBy/merge/pivot
+- Complete neural network layer set (Linear, Conv, RNN, Transformer, Norm)
+- All classical ML algorithms (trees, forests, XGBoost, clustering, PCA)
+- DataFrame, GroupBy, merge/pivot
 - Linear algebra, statistics, FFT, signal, sparse, optimization
 
-### Phase 2 — C + CUDA Kernels
-- Custom C extensions for core tensor ops via CPython API
-- Real CUDA support: cuBLAS for GEMM, cuDNN for convolutions
-- fp16 / bf16 automatic mixed precision
-- cuFFT backend for spectral ops
-- Triton kernels for custom GPU operations
+### v0.3.0 — Production completeness (complete)
+- 5-tier CUDA backend dispatcher (Triton → PyTorch → Numba → im2col → NumPy)
+- BPE / WordPiece / SentencePiece tokenizers from scratch
+- Distributed training: DataParallel, DDP, MixedPrecision
+- Model export: ONNX, TorchScript, CoreML
+- Reinforcement learning: DQN, PPO, SAC, TD3
+- Pretrained weights hub (HuggingFace download, safetensors parser)
+- Architecture zoo: CNN/ResNet/EfficientNet, ViT/DeiT, Mamba/S4, VAE/DDPM, U-Net, GCN/GAT/GIN
+- Flash Attention, QAT, advanced optimizers (Lion, Sophia, Adan, Prodigy)
 
-### Phase 3 — Distributed + Production
-- Multi-GPU data parallelism
-- Gradient checkpointing for memory-efficient backprop
-- ONNX export
-- Quantization (int8, int4)
-- JIT compilation via traced execution graphs
+### v0.4.0 — Ecosystem parity (complete)
+- GGUF binary format reader/writer (Q4_0, Q8_0 quantization)
+- 25+ evaluation metrics (BLEU, ROUGE, WER, ECE, NDCG, silhouette)
+- 10 training callbacks (EarlyStopping, TensorBoardLogger, WandBLogger, LRFinder)
+- Keras/Lightning-style `Trainer` + `TrainableModel` base class
+- 11 LR schedulers (`get_scheduler` factory, WarmupCosineDecay, OneCycleLR)
+- einops-compatible `rearrange`/`reduce`/`repeat`/`pack`/`unpack`/`EinMix`
+- Forward/backward hooks, `FeatureExtractor`, `GradientRecorder`
+- Text generation: beam search, nucleus, contrastive, speculative decoding, chat templates
+- Vision transforms: Compose/Resize/ColorJitter/AugMix/Normalize + ImageNet defaults
+- Datasets: MNIST, CIFAR-10, TinyShakespeare, IMDb + DataLoader/samplers
+
+### v0.5.0 — Planned
+- Real CUDA C extensions (cuBLAS GEMM, cuDNN conv)
+- fp16 / bf16 automatic mixed precision on GPU
+- Triton fused kernels in production paths
+- Multi-node distributed via NCCL
 
 ---
 

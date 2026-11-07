@@ -28,7 +28,7 @@ Quick start:
     df.groupby('category').mean()
 """
 
-__version__ = '0.2.0'
+__version__ = '0.3.0'
 __author__ = 'vectorphile'
 __license__ = 'Apache-2.0'
 
@@ -107,6 +107,22 @@ from vectorphile import quantization
 from vectorphile import utils
 from vectorphile.utils.data import Dataset, TensorDataset, DataLoader
 
+# ── New modules (v0.3.0 — production completeness) ───────────────────────────
+from vectorphile import backend
+from vectorphile import tokenizers
+from vectorphile import distributed
+from vectorphile import export
+from vectorphile import rl
+from vectorphile import pretrained
+
+# ── New modules (v0.4.0 — full ecosystem parity) ─────────────────────────────
+from vectorphile import metrics
+from vectorphile import callbacks
+from vectorphile import trainer
+from vectorphile import text
+from vectorphile import vision
+from vectorphile.data import datasets
+
 # ── Convenience re-exports ───────────────────────────────────────────────────
 from vectorphile.data import DataFrame, Series, read_csv, read_json
 from vectorphile.ml import (
@@ -157,6 +173,8 @@ __all__ = [
     'data', 'ml', 'utils',
     'integrate', 'interpolate', 'spatial', 'ndimage', 'transforms',
     'polynomial', 'io', 'ma', 'viz', 'hub', 'quantization',
+    'backend', 'tokenizers', 'distributed', 'export', 'rl', 'pretrained',
+    'metrics', 'callbacks', 'trainer', 'text', 'vision', 'datasets',
     'Dataset', 'TensorDataset', 'DataLoader',
     'DataFrame', 'Series', 'read_csv', 'read_json',
     'LinearRegression', 'Ridge', 'Lasso', 'ElasticNet', 'LogisticRegression',

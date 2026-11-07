@@ -17,7 +17,26 @@ def concat(dfs, axis=0, ignore_index=False) -> DataFrame:
     return DataFrame.concat(dfs, axis=axis, ignore_index=ignore_index)
 
 
+from vectorphile.data import datasets
+from vectorphile.data.datasets import (
+    Dataset, TensorDataset, Subset, ConcatDataset,
+    Sampler, SequentialSampler, RandomSampler,
+    WeightedRandomSampler, DistributedSampler,
+    DataLoader,
+    MNIST, CIFAR10, TinyShakespeare, IMDb,
+    RandomClassificationDataset, RandomImageDataset,
+    random_split,
+)
+
 __all__ = [
     'Series', 'DataFrame', 'Index', 'RangeIndex', 'GroupBy',
     'read_csv', 'read_json', 'read_parquet', 'concat',
+    'datasets',
+    'Dataset', 'TensorDataset', 'Subset', 'ConcatDataset',
+    'Sampler', 'SequentialSampler', 'RandomSampler',
+    'WeightedRandomSampler', 'DistributedSampler',
+    'DataLoader',
+    'MNIST', 'CIFAR10', 'TinyShakespeare', 'IMDb',
+    'RandomClassificationDataset', 'RandomImageDataset',
+    'random_split',
 ]

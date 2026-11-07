@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "vectorphile"
-version = "0.2.0"
+version = "0.3.0"
 description = "Unified ML/DL Python Library — replaces PyTorch + scikit-learn + NumPy + Pandas + SciPy + XGBoost + LightGBM + CatBoost + JAX + Matplotlib + Seaborn"
 readme = "README.md"
 license = { text = "Apache-2.0" }
@@ -18,12 +18,35 @@ dependencies = [
 [project.optional-dependencies]
 io = ["pyarrow>=12.0.0", "h5py>=3.8.0", "netCDF4>=1.6.0"]
 viz = ["matplotlib>=3.7.0"]
+# GPU acceleration via CuPy (pick the right CUDA variant for your driver)
+cuda = ["cupy-cuda12x>=12.0.0"]
+# Numba CUDA kernels — custom GPU kernels, no PyTorch required
+numba = ["numba>=0.57.0"]
+# OpenAI Triton fused kernels — maximum GPU throughput (requires torch + CUDA)
+triton = ["triton>=2.1.0"]
+# Reinforcement learning extras (compatible environment wrappers)
+rl = ["gymnasium>=0.29.0"]
+# Tokenizer performance (optional C extension for BPE)
+tokenizers = ["tokenizers>=0.15.0"]
+# ONNX export and runtime
+onnx = ["onnx>=1.14.0", "onnxruntime>=1.16.0"]
+# CoreML export (macOS)
+coreml = ["coremltools>=7.0"]
+# Pretrained model hub (huggingface-hub is optional — urllib used by default)
+pretrained = ["huggingface-hub>=0.20.0", "safetensors>=0.4.0"]
 full = [
     "scipy>=1.10.0",
     "pyarrow>=12.0.0",
     "h5py>=3.8.0",
     "netCDF4>=1.6.0",
     "matplotlib>=3.7.0",
+    "numba>=0.57.0",
+    "triton>=2.1.0",
+    "gymnasium>=0.29.0",
+    "onnx>=1.14.0",
+    "onnxruntime>=1.16.0",
+    "huggingface-hub>=0.20.0",
+    "safetensors>=0.4.0",
 ]
 dev = ["pytest>=7.0.0", "pytest-cov>=4.0.0", "ruff>=0.1.0"]
 

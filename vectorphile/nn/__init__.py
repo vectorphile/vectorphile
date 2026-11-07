@@ -34,6 +34,22 @@ from vectorphile.nn.norm import (
 )
 from vectorphile.nn import init
 from vectorphile.nn import functional as F
+from vectorphile.nn import architectures
+from vectorphile.nn import lr_schedulers
+from vectorphile.nn import hooks
+from vectorphile.nn import einops
+from vectorphile.nn.lr_schedulers import (
+    LRScheduler, StepLR, MultiStepLR, ExponentialLR,
+    CosineAnnealingLR, CosineAnnealingWarmRestarts,
+    OneCycleLR, WarmupCosineDecay, LinearWarmup, PolynomialLR,
+    ReduceLROnPlateauScheduler, get_scheduler,
+)
+from vectorphile.nn.einops import rearrange, reduce, repeat, pack, unpack, EinMix
+from vectorphile.nn.hooks import (
+    RemovableHook, HooksMixin,
+    register_forward_hook, register_backward_hook,
+    FeatureExtractor, GradientRecorder,
+)
 from vectorphile.nn.utils import (
     clip_grad_norm_, clip_grad_value_,
     parameters_to_vector, vector_to_parameters,
@@ -74,4 +90,18 @@ __all__ = [
     'parameters_to_vector', 'vector_to_parameters',
     'model_summary', 'weight_norm', 'spectral_norm',
     'get_total_params', 'freeze_params', 'unfreeze_params',
+    # Architecture zoo
+    'architectures',
+    # LR schedulers
+    'lr_schedulers', 'hooks', 'einops',
+    'LRScheduler', 'StepLR', 'MultiStepLR', 'ExponentialLR',
+    'CosineAnnealingLR', 'CosineAnnealingWarmRestarts',
+    'OneCycleLR', 'WarmupCosineDecay', 'LinearWarmup', 'PolynomialLR',
+    'ReduceLROnPlateauScheduler', 'get_scheduler',
+    # Einops
+    'rearrange', 'reduce', 'repeat', 'pack', 'unpack', 'EinMix',
+    # Hooks
+    'RemovableHook', 'HooksMixin',
+    'register_forward_hook', 'register_backward_hook',
+    'FeatureExtractor', 'GradientRecorder',
 ]

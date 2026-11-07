@@ -1,14 +1,15 @@
-"""Activation function modules."""
+"""Activation function modules — heavy ops dispatched through vectorphile.backend."""
 import numpy as np
 from vectorphile.nn.module import Module
 from vectorphile.core.tensor import Tensor
+import vectorphile.backend as _backend
 
 
 class ReLU(Module):
     def __init__(self, inplace=False):
         super().__init__()
     def forward(self, x: Tensor) -> Tensor:
-        return x.relu()
+        return Tensor(_backend.relu(x._data), device=x.device)
     def __repr__(self): return 'ReLU()'
 
 
@@ -32,8 +33,7 @@ class ELU(Module):
 
 class GELU(Module):
     def forward(self, x: Tensor) -> Tensor:
-        d = x._data
-        return Tensor(0.5 * d * (1 + np.tanh(np.sqrt(2/np.pi) * (d + 0.044715 * d**3))), device=x.device)
+        return Tensor(_backend.gelu(x._data), device=x.device)
     def __repr__(self): return 'GELU()'
 
 
@@ -54,8 +54,7 @@ class Softmax(Module):
         super().__init__()
         self.dim = dim
     def forward(self, x: Tensor) -> Tensor:
-        from vectorphile.core.tensor import softmax
-        return softmax(x, self.dim)
+        return Tensor(_backend.softmax(x._data, self.dim), device=x.device)
     def __repr__(self): return f'Softmax(dim={self.dim})'
 
 
@@ -80,7 +79,7 @@ class SELU(Module):
 
 class SiLU(Module):
     def forward(self, x: Tensor) -> Tensor:
-        return Tensor(x._data * (1 / (1 + np.exp(-x._data))), device=x.device)
+        return Tensor(_backend.silu(x._data), device=x.device)
     def __repr__(self): return 'SiLU()'
 
 
