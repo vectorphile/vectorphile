@@ -4,17 +4,28 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "vectorphile"
-version = "0.1.0"
-description = "Unified ML/DL Python Library — replaces PyTorch + scikit-learn + NumPy + Pandas + SciPy"
+version = "0.2.0"
+description = "Unified ML/DL Python Library — replaces PyTorch + scikit-learn + NumPy + Pandas + SciPy + XGBoost + LightGBM + CatBoost + JAX + Matplotlib + Seaborn"
 readme = "README.md"
 license = { text = "Apache-2.0" }
 authors = [{ name = "vectorphile", email = "saadsalmanakram1@gmail.com" }]
 requires-python = ">=3.9"
-dependencies = ["numpy>=1.24.0"]
+dependencies = [
+    "numpy>=1.24.0",
+    "scipy>=1.10.0",
+]
 
 [project.optional-dependencies]
-full = ["scipy>=1.10.0", "pyarrow>=12.0.0"]
-dev = ["pytest>=7.0.0", "pytest-cov>=4.0.0"]
+io = ["pyarrow>=12.0.0", "h5py>=3.8.0", "netCDF4>=1.6.0"]
+viz = ["matplotlib>=3.7.0"]
+full = [
+    "scipy>=1.10.0",
+    "pyarrow>=12.0.0",
+    "h5py>=3.8.0",
+    "netCDF4>=1.6.0",
+    "matplotlib>=3.7.0",
+]
+dev = ["pytest>=7.0.0", "pytest-cov>=4.0.0", "ruff>=0.1.0"]
 
 [project.urls]
 Homepage = "https://github.com/vectorphile/vectorphile"

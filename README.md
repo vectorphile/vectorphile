@@ -34,11 +34,17 @@ This is not a wrapper. Every module is a ground-up implementation, designed with
 | Module | What you get |
 |---|---|
 | `vp` (core) | `Tensor` class, all ndarray ops, broadcasting, slicing, reshaping, type casting, autograd |
-| `vp.nn` | Layers, activations, normalization, dropout, loss functions, `Sequential` |
+| `vp.nn` | Linear, Conv, Pooling, RNN/LSTM/GRU, Attention, Transformer, Norm, activations, losses, `Sequential`, `ModuleList`, `ModuleDict` |
+| `vp.nn.F` | Full functional API: activations, conv, pool, norm, dropout, embedding, one_hot, all losses, pad, interpolate |
+| `vp.nn.init` | xavier_uniform/normal, kaiming_uniform/normal, orthogonal, sparse, trunc_normal, dirac |
 | `vp.optim` | SGD, Adam, AdamW, RMSprop, Adagrad, LR schedulers |
 | `vp.autograd` | Reverse-mode autodiff engine, computation graph, `no_grad` context |
-| `vp.ml` | Linear models, trees, forests, boosting, clustering, decomposition, neighbors, Naive Bayes, SVM, preprocessing, metrics, model selection |
-| `vp.ml.boost` | `XGBClassifier`, `XGBRegressor` — histogram-based, regularized objective |
+| `vp.transforms` | JAX-inspired `grad`, `vmap`, `jit`, `pmap`, `checkpoint`, `jacobian`, `hessian`, `jvp`, `vjp`, `eval_shape` |
+| `vp.ml` | Linear, trees, forests, XGB, LGBM, CatBoost, clustering, PCA/ICA/NMF, KNN, SVM, Naive Bayes, pipelines |
+| `vp.ml.anomaly` | IsolationForest, LocalOutlierFactor, EllipticEnvelope, OneClassSVM |
+| `vp.ml.manifold` | TSNE (Barnes-Hut), UMAP, MDS, Isomap, LLE, SpectralEmbedding |
+| `vp.ml.feature_selection` | VarianceThreshold, SelectKBest, RFE, RFECV, SelectFromModel, chi2, mutual_info |
+| `vp.ml.pipeline` | Pipeline, ColumnTransformer, FeatureUnion, make_pipeline |
 | `vp.data` | `DataFrame`, `Series`, `read_csv`, `read_json`, GroupBy, merge, pivot, melt |
 | `vp.linalg` | det, inv, svd, eig, lstsq, solve, norm, qr, cholesky, pinv |
 | `vp.stats` | mean, std, corr, cov, zscore, t-test, chi2, ANOVA, Pearson/Spearman |
@@ -47,6 +53,16 @@ This is not a wrapper. Every module is a ground-up implementation, designed with
 | `vp.signal` | stft, convolve, correlate, butter, filtfilt, spectrogram |
 | `vp.sparse` | csr_matrix, csc_matrix, coo_matrix |
 | `vp.optimize` | minimize, root, curve_fit, differential_evolution |
+| `vp.integrate` | quad, dblquad, nquad, solve_ivp, odeint, trapezoid, simpson, romberg |
+| `vp.interpolate` | interp1d, CubicSpline, BSpline, griddata, RBFInterpolator, RegularGridInterpolator |
+| `vp.spatial` | KDTree, cKDTree, ConvexHull, Delaunay, Voronoi, cdist, pdist |
+| `vp.ndimage` | gaussian_filter, sobel, label, zoom, rotate, morphological ops, distance transforms |
+| `vp.polynomial` | Polynomial, Chebyshev, Legendre, Laguerre, Hermite + Horner eval, Lagrange interpolation, Sturm |
+| `vp.ma` | Full masked array support — MaskedArray, masked_where, masked_invalid, all statistics |
+| `vp.io` | MAT, WAV, Parquet, Feather, HDF5, NetCDF4, Matrix Market, NumPy native |
+| `vp.viz` | plot, scatter, bar, histogram, heatmap, boxplot, violin, pairplot, ROC, confusion matrix, training history |
+| `vp.hub` | save_model, load_model, Checkpointer, model_card |
+| `vp.quantization` | quantize (INT8/INT4/FP16), QuantizedModel, MinMaxCalibrator, magnitude_prune |
 | `vp.amp` | autocast, GradScaler (Phase 2: real CUDA fp16/bf16) |
 | `vp.utils.data` | `Dataset`, `TensorDataset`, `DataLoader` with batching and shuffling |
 
@@ -61,8 +77,10 @@ pip install vectorphile
 **With optional dependencies:**
 
 ```bash
-pip install "vectorphile[full]"   # includes scipy, pyarrow backends
-pip install "vectorphile[dev]"    # includes pytest, pytest-cov
+pip install "vectorphile[full]"   # scipy, pyarrow, h5py, netCDF4, matplotlib
+pip install "vectorphile[viz]"    # matplotlib only
+pip install "vectorphile[io]"     # pyarrow, h5py, netCDF4
+pip install "vectorphile[dev]"    # pytest, pytest-cov, ruff
 ```
 
 **From source:**
@@ -73,7 +91,7 @@ cd vectorphile
 pip install -e ".[dev]"
 ```
 
-**Requirements:** Python >= 3.9, NumPy >= 1.24
+**Requirements:** Python >= 3.9, NumPy >= 1.24, SciPy >= 1.10
 
 ---
 

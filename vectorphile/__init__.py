@@ -28,7 +28,7 @@ Quick start:
     df.groupby('category').mean()
 """
 
-__version__ = '0.1.0'
+__version__ = '0.2.0'
 __author__ = 'vectorphile'
 __license__ = 'Apache-2.0'
 
@@ -90,6 +90,19 @@ from vectorphile import data
 # ── Machine learning ─────────────────────────────────────────────────────────
 from vectorphile import ml
 
+# ── New modules (v0.2.0) ──────────────────────────────────────────────────────
+from vectorphile import integrate
+from vectorphile import interpolate
+from vectorphile import spatial
+from vectorphile import ndimage
+from vectorphile import transforms
+from vectorphile import polynomial
+from vectorphile import io
+from vectorphile import ma
+from vectorphile import viz
+from vectorphile import hub
+from vectorphile import quantization
+
 # ── Utils (DataLoader, Dataset) ──────────────────────────────────────────────
 from vectorphile import utils
 from vectorphile.utils.data import Dataset, TensorDataset, DataLoader
@@ -142,6 +155,8 @@ __all__ = [
     'autograd', 'no_grad',
     'nn', 'optim', 'linalg', 'stats', 'random', 'fft', 'signal', 'sparse', 'optimize', 'amp',
     'data', 'ml', 'utils',
+    'integrate', 'interpolate', 'spatial', 'ndimage', 'transforms',
+    'polynomial', 'io', 'ma', 'viz', 'hub', 'quantization',
     'Dataset', 'TensorDataset', 'DataLoader',
     'DataFrame', 'Series', 'read_csv', 'read_json',
     'LinearRegression', 'Ridge', 'Lasso', 'ElasticNet', 'LogisticRegression',
