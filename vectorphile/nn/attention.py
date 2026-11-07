@@ -39,7 +39,7 @@ class MultiheadAttention(Module):
             self._parameters['out_proj_bias'] = self.out_proj_bias
 
     def forward(self, query: Tensor, key: Tensor, value: Tensor,
-                attn_mask=None, key_padding_mask=None):
+                attn_mask=None, key_padding_mask=None, need_weights=True, **kwargs):
         q, k, v = query._data, key._data, value._data
         if self.batch_first:
             q = q.transpose(1, 0, 2)

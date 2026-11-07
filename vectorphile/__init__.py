@@ -28,7 +28,7 @@ Quick start:
     df.groupby('category').mean()
 """
 
-__version__ = '0.3.0'
+__version__ = '0.4.0'
 __author__ = 'vectorphile'
 __license__ = 'Apache-2.0'
 
@@ -42,6 +42,7 @@ from vectorphile.core.tensor import (
     matmul, dot, where,
     exp, log, sqrt, clamp,
     softmax, log_softmax, sigmoid, relu, tanh, einsum,
+    tril, triu, bmm, topk, cumsum, multinomial, isnan, isinf, sort,
 )
 # shadow builtins only in the vp namespace
 from vectorphile.core.tensor import sum as sum
@@ -137,14 +138,31 @@ from vectorphile.ml import (
 def device(dev: str) -> str:
     return dev
 
-def is_available() -> bool:
-    """Returns True if CUDA is available (always False in Phase 1)."""
-    return False
+def _cuda_is_available() -> bool:
+    try:
+        from numba import cuda as _nc
+        return len(list(_nc.gpus)) > 0
+    except Exception:
+        return False
+
+def _cuda_device_count() -> int:
+    try:
+        from numba import cuda as _nc
+        return len(list(_nc.gpus))
+    except Exception:
+        return 0
+
+def _cuda_get_device_name(i=0) -> str:
+    try:
+        from numba import cuda as _nc
+        return _nc.gpus[i].name
+    except Exception:
+        return 'CPU'
 
 cuda = type('cuda', (), {
-    'is_available': staticmethod(lambda: False),
-    'device_count': staticmethod(lambda: 0),
-    'get_device_name': staticmethod(lambda i=0: 'CPU'),
+    'is_available': staticmethod(_cuda_is_available),
+    'device_count': staticmethod(_cuda_device_count),
+    'get_device_name': staticmethod(_cuda_get_device_name),
 })()
 
 # Type aliases

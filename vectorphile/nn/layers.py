@@ -48,8 +48,59 @@ class Linear(Module):
             result = result + self.bias_param
         return result
 
+    @property
+    def bias(self):
+        return self.bias_param
+
     def __repr__(self):
         return f'Linear(in_features={self.in_features}, out_features={self.out_features}, bias={self.bias_param is not None})'
+
+
+class Conv1d(Module):
+    def __init__(self, in_channels, out_channels, kernel_size, stride=1, padding=0, bias=True, groups=1, dilation=1, padding_mode='zeros'):
+        super().__init__()
+        self.in_channels = in_channels
+        self.out_channels = out_channels
+        self.kernel_size = kernel_size
+        self.stride = stride
+        self.padding = padding
+        self.groups = groups
+        k = math.sqrt(1.0 / (in_channels * kernel_size))
+        self.weight = Tensor(
+            np.random.uniform(-k, k, (out_channels, in_channels, kernel_size)).astype(np.float32),
+            requires_grad=True
+        )
+        self._parameters['weight'] = self.weight
+        self.bias_param = None
+        if bias:
+            self.bias_param = Tensor(np.zeros(out_channels, dtype=np.float32), requires_grad=True)
+            self._parameters['bias_param'] = self.bias_param
+
+    @property
+    def bias(self):
+        return self.bias_param
+
+    def forward(self, x: Tensor) -> Tensor:
+        # x: [B, C, L]
+        from scipy.signal import fftconvolve
+        xd = x._data
+        wd = self.weight._data
+        B, C_in, L = xd.shape
+        C_out, _, K = wd.shape
+        p = self.padding
+        s = self.stride
+        if p > 0:
+            xd = np.pad(xd, ((0,0),(0,0),(p,p)))
+        L_out = (L + 2*p - K) // s + 1
+        out = np.zeros((B, C_out, L_out), dtype=np.float32)
+        for oc in range(C_out):
+            for ic in range(C_in):
+                for b in range(B):
+                    conv = np.convolve(xd[b, ic], wd[oc, ic, ::-1], mode='valid')
+                    out[b, oc] += conv[::s][:L_out]
+        if self.bias_param is not None:
+            out += self.bias_param._data[None, :, None]
+        return Tensor(out, device=x.device)
 
 
 class Conv2d(Module):
@@ -191,3 +242,17 @@ class Embedding(Module):
 
     def __repr__(self):
         return f'Embedding({self.num_embeddings}, {self.embedding_dim})'
+
+
+class Flatten(Module):
+    def __init__(self, start_dim=1, end_dim=-1):
+        super().__init__()
+        self.start_dim = start_dim
+        self.end_dim = end_dim
+
+    def forward(self, x: Tensor) -> Tensor:
+        shape = x._data.shape
+        ndim = len(shape)
+        end = self.end_dim if self.end_dim >= 0 else ndim + self.end_dim
+        new_shape = shape[:self.start_dim] + (-1,) + shape[end + 1:]
+        return Tensor(x._data.reshape(new_shape), device=x.device)

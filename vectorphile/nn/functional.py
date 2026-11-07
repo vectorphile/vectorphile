@@ -451,6 +451,26 @@ def unfold(x: Tensor, kernel_size, dilation=1, padding=0, stride=1) -> Tensor:
             cols.append(x_pad[:, :, i*s[0]:i*s[0]+kh, j*s[1]:j*s[1]+kw].reshape(N, -1))
     return Tensor(np.stack(cols, axis=2).astype(np.float32), device=x.device)
 
+def scaled_dot_product_attention(query: Tensor, key: Tensor, value: Tensor,
+                                  attn_mask=None, dropout_p=0.0, is_causal=False) -> Tensor:
+    import math
+    scale = math.sqrt(query._data.shape[-1])
+    scores = np.matmul(query._data, key._data.swapaxes(-2, -1)) / scale
+    if is_causal:
+        T = scores.shape[-2]
+        S = scores.shape[-1]
+        causal_mask = np.tril(np.ones((T, S), dtype=bool))
+        scores = np.where(causal_mask, scores, -1e9)
+    if attn_mask is not None:
+        mask_data = attn_mask._data if isinstance(attn_mask, Tensor) else attn_mask
+        scores = scores + mask_data
+    e = np.exp(scores - scores.max(axis=-1, keepdims=True))
+    attn = e / e.sum(axis=-1, keepdims=True)
+    if dropout_p > 0.0:
+        attn = attn * (np.random.rand(*attn.shape) > dropout_p).astype(np.float32) / (1 - dropout_p)
+    out = np.matmul(attn, value._data)
+    return Tensor(out.astype(np.float32), device=query.device)
+
 def pixel_shuffle(x: Tensor, upscale_factor: int) -> Tensor:
     N, C, H, W = x._data.shape
     r = upscale_factor

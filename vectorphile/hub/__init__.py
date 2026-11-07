@@ -70,6 +70,25 @@ def load_model(name: str, version: str = '1.0.0', path: Optional[str] = None) ->
     return model
 
 
+def save_checkpoint(model: Any, path: str, metadata: Optional[Dict] = None) -> str:
+    """Save a model checkpoint to a file path."""
+    import pickle
+    Path(path).parent.mkdir(parents=True, exist_ok=True)
+    with open(path, 'wb') as f:
+        pickle.dump({'model': model, 'metadata': metadata or {}}, f, protocol=4)
+    return path
+
+
+def load_checkpoint(path: str) -> Any:
+    """Load a model checkpoint from a file path."""
+    import pickle
+    with open(path, 'rb') as f:
+        data = pickle.load(f)
+    if isinstance(data, dict) and 'model' in data:
+        return data['model']
+    return data
+
+
 def save_weights(model: Any, path: str) -> None:
     """Save only the weights/parameters of a model as .npz."""
     if not hasattr(model, 'parameters'):

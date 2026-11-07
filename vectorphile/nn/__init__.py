@@ -1,5 +1,6 @@
 from vectorphile.nn.module import Module
-from vectorphile.nn.layers import Linear, Conv2d, BatchNorm1d, BatchNorm2d, LayerNorm, Dropout, Embedding
+from vectorphile.nn.layers import Linear, Conv1d, Conv2d, BatchNorm1d, BatchNorm2d, LayerNorm, Dropout, Embedding, Flatten
+from vectorphile.core.tensor import Tensor as Parameter
 from vectorphile.nn.activations import (
     ReLU, LeakyReLU, ELU, GELU, Sigmoid, Tanh, Softmax, LogSoftmax,
     SELU, SiLU, Mish, Hardswish,

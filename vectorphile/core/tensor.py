@@ -42,6 +42,15 @@ class Tensor:
     def ndim(self) -> int:
         return self._data.ndim
 
+    def dim(self) -> int:
+        return self._data.ndim
+
+    def numel(self) -> int:
+        return int(self._data.size)
+
+    def element_size(self) -> int:
+        return int(self._data.itemsize)
+
     @property
     def dtype(self) -> str:
         return str(self._data.dtype)
@@ -201,6 +210,9 @@ class Tensor:
             shape = shape[0]
         return Tensor(np.broadcast_to(self._data, shape).copy(), device=self.device, requires_grad=self.requires_grad)
 
+    def expand_as(self, other: 'Tensor') -> 'Tensor':
+        return Tensor(np.broadcast_to(self._data, other._data.shape).copy(), device=self.device, requires_grad=self.requires_grad)
+
     def contiguous(self) -> 'Tensor':
         return Tensor(np.ascontiguousarray(self._data), device=self.device, requires_grad=self.requires_grad)
 
@@ -208,7 +220,10 @@ class Tensor:
         return [Tensor(a, device=self.device) for a in np.array_split(self._data, chunks, axis=dim)]
 
     def split(self, split_size, dim=0) -> List['Tensor']:
-        indices = list(range(split_size, self.shape[dim], split_size))
+        if isinstance(split_size, (list, tuple)):
+            indices = np.cumsum(split_size)[:-1]
+        else:
+            indices = list(range(split_size, self.shape[dim], split_size))
         return [Tensor(a, device=self.device) for a in np.split(self._data, indices, axis=dim)]
 
     def repeat(self, *repeats) -> 'Tensor':
@@ -413,6 +428,9 @@ class Tensor:
             result._is_leaf = False
         return result
 
+    def add(self, other) -> 'Tensor':
+        return self.__add__(other)
+
     def __radd__(self, other) -> 'Tensor':
         return self.__add__(other)
 
@@ -550,8 +568,7 @@ class Tensor:
         return self
 
     def masked_fill(self, mask: 'Tensor', value: float) -> 'Tensor':
-        result = self._data.copy()
-        result[mask._data] = value
+        result = np.where(mask._data, value, self._data)
         return Tensor(result, device=self.device)
 
     def where(self, condition: 'Tensor', other: 'Tensor') -> 'Tensor':
@@ -694,3 +711,50 @@ def tanh(input: Tensor) -> Tensor:
 def einsum(equation: str, *operands) -> Tensor:
     arrays = [op._data for op in operands]
     return Tensor(np.einsum(equation, *arrays), device=operands[0].device)
+
+def tril(input: Tensor, diagonal: int = 0) -> Tensor:
+    return Tensor(np.tril(input._data, k=diagonal), device=input.device)
+
+def triu(input: Tensor, diagonal: int = 0) -> Tensor:
+    return Tensor(np.triu(input._data, k=diagonal), device=input.device)
+
+def bmm(a: Tensor, b: Tensor) -> Tensor:
+    return Tensor(np.matmul(a._data, b._data), device=a.device)
+
+def topk(input: Tensor, k: int, dim: int = -1, largest: bool = True, sorted: bool = True):
+    data = input._data
+    if largest:
+        idx = np.argsort(-data, axis=dim)
+    else:
+        idx = np.argsort(data, axis=dim)
+    idx = np.take(idx, np.arange(k), axis=dim)
+    vals = np.take_along_axis(data, idx, axis=dim)
+    return Tensor(vals, device=input.device), Tensor(idx.astype(np.int64), device=input.device)
+
+def cumsum(input: Tensor, dim: int = 0) -> Tensor:
+    return Tensor(np.cumsum(input._data, axis=dim), device=input.device)
+
+def multinomial(input: Tensor, num_samples: int, replacement: bool = True) -> Tensor:
+    probs = input._data.astype(np.float64)
+    if probs.ndim == 1:
+        probs = probs / probs.sum()
+        samples = np.random.choice(len(probs), size=num_samples, replace=replacement, p=probs)
+        return Tensor(samples.astype(np.int64), device=input.device)
+    results = []
+    for row in probs:
+        row = row / row.sum()
+        results.append(np.random.choice(len(row), size=num_samples, replace=replacement, p=row))
+    return Tensor(np.array(results, dtype=np.int64), device=input.device)
+
+def isnan(input: Tensor) -> Tensor:
+    return Tensor(np.isnan(input._data), device=input.device)
+
+def isinf(input: Tensor) -> Tensor:
+    return Tensor(np.isinf(input._data), device=input.device)
+
+def sort(input: Tensor, dim: int = -1, descending: bool = False):
+    idx = np.argsort(input._data, axis=dim)
+    if descending:
+        idx = np.flip(idx, axis=dim)
+    vals = np.take_along_axis(input._data, idx, axis=dim)
+    return Tensor(vals, device=input.device), Tensor(idx.astype(np.int64), device=input.device)

@@ -33,6 +33,18 @@ class Module:
             full = f'{prefix}.{mname}' if prefix else mname
             yield from module.named_parameters(prefix=full)
 
+    def buffers(self) -> Iterator:
+        yield from []
+
+    def named_buffers(self, prefix='') -> Iterator[Tuple[str, Any]]:
+        yield from []
+
+    def children(self) -> Iterator['Module']:
+        yield from self._modules.values()
+
+    def named_children(self) -> Iterator[Tuple[str, 'Module']]:
+        yield from self._modules.items()
+
     def modules(self) -> Iterator['Module']:
         yield self
         for m in self._modules.values():

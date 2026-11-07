@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "vectorphile"
-version = "0.3.0"
+version = "0.4.0"
 description = "Unified ML/DL Python Library — replaces PyTorch + scikit-learn + NumPy + Pandas + SciPy + XGBoost + LightGBM + CatBoost + JAX + Matplotlib + Seaborn"
 readme = "README.md"
 license = { text = "Apache-2.0" }

@@ -19,7 +19,10 @@ try:
     from numba import cuda as _numba_cuda
     import numba
     _NUMBA_AVAILABLE = True
-    _CUDA_AVAILABLE = _numba_cuda.is_available()
+    try:
+        _CUDA_AVAILABLE = len(list(_numba_cuda.gpus)) > 0
+    except Exception:
+        _CUDA_AVAILABLE = _numba_cuda.is_available()
 except Exception:
     _numba_cuda = None
     numba = None

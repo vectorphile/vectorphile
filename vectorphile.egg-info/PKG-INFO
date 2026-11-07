@@ -1,0 +1,554 @@
+Metadata-Version: 2.4
+Name: vectorphile
+Version: 0.3.0
+Summary: Unified ML/DL Python Library — replaces PyTorch + scikit-learn + NumPy + Pandas + SciPy + XGBoost + LightGBM + CatBoost + JAX + Matplotlib + Seaborn
+Home-page: https://github.com/vectorphile/vectorphile
+Author: vectorphile
+Author-email: vectorphile <saadsalmanakram1@gmail.com>
+License: Apache-2.0
+Project-URL: Homepage, https://github.com/vectorphile/vectorphile
+Project-URL: Bug Tracker, https://github.com/vectorphile/vectorphile/issues
+Requires-Python: >=3.9
+Description-Content-Type: text/markdown
+License-File: LICENSE
+Requires-Dist: numpy>=1.24.0
+Requires-Dist: scipy>=1.10.0
+Provides-Extra: io
+Requires-Dist: pyarrow>=12.0.0; extra == "io"
+Requires-Dist: h5py>=3.8.0; extra == "io"
+Requires-Dist: netCDF4>=1.6.0; extra == "io"
+Provides-Extra: viz
+Requires-Dist: matplotlib>=3.7.0; extra == "viz"
+Provides-Extra: cuda
+Requires-Dist: cupy-cuda12x>=12.0.0; extra == "cuda"
+Provides-Extra: numba
+Requires-Dist: numba>=0.57.0; extra == "numba"
+Provides-Extra: triton
+Requires-Dist: triton>=2.1.0; extra == "triton"
+Provides-Extra: rl
+Requires-Dist: gymnasium>=0.29.0; extra == "rl"
+Provides-Extra: tokenizers
+Requires-Dist: tokenizers>=0.15.0; extra == "tokenizers"
+Provides-Extra: onnx
+Requires-Dist: onnx>=1.14.0; extra == "onnx"
+Requires-Dist: onnxruntime>=1.16.0; extra == "onnx"
+Provides-Extra: coreml
+Requires-Dist: coremltools>=7.0; extra == "coreml"
+Provides-Extra: pretrained
+Requires-Dist: huggingface-hub>=0.20.0; extra == "pretrained"
+Requires-Dist: safetensors>=0.4.0; extra == "pretrained"
+Provides-Extra: full
+Requires-Dist: scipy>=1.10.0; extra == "full"
+Requires-Dist: pyarrow>=12.0.0; extra == "full"
+Requires-Dist: h5py>=3.8.0; extra == "full"
+Requires-Dist: netCDF4>=1.6.0; extra == "full"
+Requires-Dist: matplotlib>=3.7.0; extra == "full"
+Requires-Dist: numba>=0.57.0; extra == "full"
+Requires-Dist: triton>=2.1.0; extra == "full"
+Requires-Dist: gymnasium>=0.29.0; extra == "full"
+Requires-Dist: onnx>=1.14.0; extra == "full"
+Requires-Dist: onnxruntime>=1.16.0; extra == "full"
+Requires-Dist: huggingface-hub>=0.20.0; extra == "full"
+Requires-Dist: safetensors>=0.4.0; extra == "full"
+Provides-Extra: dev
+Requires-Dist: pytest>=7.0.0; extra == "dev"
+Requires-Dist: pytest-cov>=4.0.0; extra == "dev"
+Requires-Dist: ruff>=0.1.0; extra == "dev"
+Dynamic: author
+Dynamic: home-page
+Dynamic: license-file
+Dynamic: requires-python
+
+# vectorphile
+
+> **A unified, research-first computational intelligence library for Python.**
+> One import. Every layer of the ML stack — from raw tensor arithmetic to high-level learning algorithms, statistical inference, signal processing, and data wrangling — implemented from first principles in pure Python.
+
+```python
+import vectorphile as vp
+```
+
+---
+
+## Philosophy
+
+Most ML workflows require assembling a fragmented ecosystem of packages that were never designed to interoperate. Each carries its own type system, memory model, and API conventions. The cognitive overhead of bridging these layers is real, and the hidden incompatibilities between them are a persistent source of bugs and inefficiency.
+
+**vectorphile** is built on a single premise: the entire computational stack required for modern machine learning research should be expressible through one coherent, unified API — rooted in a single tensor primitive, backed by a single autodiff engine, and extended consistently across every subdomain from linear algebra to gradient boosting to signal processing.
+
+This is not a wrapper. Every module is a ground-up implementation, designed with a research environment in mind: readable internals, stable gradients, and an architecture that exposes rather than hides the mathematics.
+
+---
+
+## Core Design Principles
+
+- **Primitive unity** — Every numeric object in vectorphile is a `Tensor`. DataFrames, sparse matrices, model parameters, and statistical outputs all share the same underlying memory representation and operator set.
+- **Autodiff-native** — The autograd engine is not bolted on. Every tensor operation is differentiable by default. Gradient flow is explicit, inspectable, and composable.
+- **No hidden magic** — There are no global dispatch tables, no opaque C extensions in Phase 1, no framework-level implicit state. What you read is what runs.
+- **Research portability** — The API surface is designed so that a researcher can move from a quick prototype to a production training loop without changing idioms.
+- **Progressive depth** — Use high-level `vp.nn.Sequential` for fast iteration; drop into `vp.autograd` and raw tensor ops when you need full control over the forward/backward pass.
+
+---
+
+## Module Map
+
+| Module | What you get |
+|---|---|
+| `vp` (core) | `Tensor` class, all ndarray ops, broadcasting, slicing, reshaping, type casting, autograd |
+| `vp.nn` | Linear, Conv, Pooling, RNN/LSTM/GRU, Attention, Transformer, Norm, activations, losses, `Sequential`, `ModuleList`, `ModuleDict` |
+| `vp.nn.F` | Full functional API: activations, conv, pool, norm, dropout, embedding, one_hot, all losses, pad, interpolate |
+| `vp.nn.init` | xavier_uniform/normal, kaiming_uniform/normal, orthogonal, sparse, trunc_normal, dirac |
+| `vp.optim` | SGD, Adam, AdamW, RMSprop, Adagrad, LR schedulers |
+| `vp.autograd` | Reverse-mode autodiff engine, computation graph, `no_grad` context |
+| `vp.transforms` | JAX-inspired `grad`, `vmap`, `jit`, `pmap`, `checkpoint`, `jacobian`, `hessian`, `jvp`, `vjp`, `eval_shape` |
+| `vp.ml` | Linear, trees, forests, XGB, LGBM, CatBoost, clustering, PCA/ICA/NMF, KNN, SVM, Naive Bayes, pipelines |
+| `vp.ml.anomaly` | IsolationForest, LocalOutlierFactor, EllipticEnvelope, OneClassSVM |
+| `vp.ml.manifold` | TSNE (Barnes-Hut), UMAP, MDS, Isomap, LLE, SpectralEmbedding |
+| `vp.ml.feature_selection` | VarianceThreshold, SelectKBest, RFE, RFECV, SelectFromModel, chi2, mutual_info |
+| `vp.ml.pipeline` | Pipeline, ColumnTransformer, FeatureUnion, make_pipeline |
+| `vp.data` | `DataFrame`, `Series`, `read_csv`, `read_json`, GroupBy, merge, pivot, melt |
+| `vp.linalg` | det, inv, svd, eig, lstsq, solve, norm, qr, cholesky, pinv |
+| `vp.stats` | mean, std, corr, cov, zscore, t-test, chi2, ANOVA, Pearson/Spearman |
+| `vp.random` | seed, rand, randn, choice, normal, binomial, multinomial |
+| `vp.fft` | fft, ifft, rfft, fft2, fftshift |
+| `vp.signal` | stft, convolve, correlate, butter, filtfilt, spectrogram |
+| `vp.sparse` | csr_matrix, csc_matrix, coo_matrix |
+| `vp.optimize` | minimize, root, curve_fit, differential_evolution |
+| `vp.integrate` | quad, dblquad, nquad, solve_ivp, odeint, trapezoid, simpson, romberg |
+| `vp.interpolate` | interp1d, CubicSpline, BSpline, griddata, RBFInterpolator, RegularGridInterpolator |
+| `vp.spatial` | KDTree, cKDTree, ConvexHull, Delaunay, Voronoi, cdist, pdist |
+| `vp.ndimage` | gaussian_filter, sobel, label, zoom, rotate, morphological ops, distance transforms |
+| `vp.polynomial` | Polynomial, Chebyshev, Legendre, Laguerre, Hermite + Horner eval, Lagrange interpolation, Sturm |
+| `vp.ma` | Full masked array support — MaskedArray, masked_where, masked_invalid, all statistics |
+| `vp.io` | MAT, WAV, Parquet, Feather, HDF5, NetCDF4, Matrix Market, NumPy native |
+| `vp.viz` | plot, scatter, bar, histogram, heatmap, boxplot, violin, pairplot, ROC, confusion matrix, training history |
+| `vp.hub` | save_model, load_model, Checkpointer, model_card |
+| `vp.quantization` | quantize (INT8/INT4/FP16), QuantizedModel, MinMaxCalibrator, magnitude_prune |
+| `vp.amp` | autocast, GradScaler (Phase 2: real CUDA fp16/bf16) |
+| `vp.utils.data` | `Dataset`, `TensorDataset`, `DataLoader` with batching and shuffling |
+| `vp.backend` | 5-tier dispatch: Triton JIT → PyTorch CUDA → Numba CUDA → im2col+BLAS → NumPy |
+| `vp.tokenizers` | BPE, WordPiece, SentencePiece, CharacterTokenizer — zero external deps |
+| `vp.distributed` | DataParallel, DDP, GradientAccumulator, MixedPrecisionTrainer |
+| `vp.export` | ONNX, TorchScript, CoreML, SavedModel, GGUF (Q4_0/Q8_0), benchmark |
+| `vp.rl` | DQN/DoubleDQN/DuelingDQN, REINFORCE, A2C, PPO, SAC, TD3, PER, environments |
+| `vp.pretrained` | HuggingFace Hub download, safetensors parser, weight mappers for GPT-2/BERT/ViT/LLaMA |
+| `vp.metrics` | 25+ metrics: accuracy, BLEU, ROUGE-L, WER, NDCG, ECE, silhouette, ARI, NMI |
+| `vp.callbacks` | EarlyStopping, ModelCheckpoint, ReduceLROnPlateau, TensorBoardLogger, WandBLogger, LRFinder |
+| `vp.trainer` | PyTorch Lightning-style `Trainer` + `TrainableModel` base class |
+| `vp.text` | beam_search, nucleus_sampling, contrastive_search, speculative_decoding, chat templates, `TextGenerationPipeline` |
+| `vp.vision` | Compose, Resize, RandomCrop, ColorJitter, AugMix, ToTensor, Normalize, make_grid, extract_features |
+| `vp.data.datasets` | MNIST, CIFAR-10, TinyShakespeare, IMDb + DataLoader, samplers, random_split |
+| `vp.nn.lr_schedulers` | StepLR, CosineAnnealingLR, OneCycleLR, WarmupCosineDecay, PolynomialLR, get_scheduler |
+| `vp.nn.einops` | rearrange, reduce, repeat, pack, unpack, EinMix |
+| `vp.nn.hooks` | register_forward_hook, register_backward_hook, FeatureExtractor, GradientRecorder |
+| `vp.autograd` | Reverse-mode + second-order autodiff, `jacobian`, `hessian`, `vmap`, `checkpoint` |
+| `vp.nn.flash_attention` | Flash Attention 2 (tiled, O(N) memory), variable-length sequences |
+| `vp.nn.qat` | Quantization-aware training (straight-through estimator), prepare_qat / convert_qat |
+| `vp.optim` (advanced) | Lion, Sophia, Adan, CAME, Prodigy, ScheduleFreeAdamW |
+| `vp.nn.architectures` | CNN zoo (VGG/ResNet/DenseNet/EfficientNet), ViT/DeiT, Mamba/S4, VAE/DDPM/DCGAN, U-Net, GCN/GAT/GIN |
+
+---
+
+## Installation
+
+```bash
+pip install vectorphile
+```
+
+**With optional dependencies:**
+
+```bash
+pip install "vectorphile[full]"   # scipy, pyarrow, h5py, netCDF4, matplotlib
+pip install "vectorphile[viz]"    # matplotlib only
+pip install "vectorphile[io]"     # pyarrow, h5py, netCDF4
+pip install "vectorphile[dev]"    # pytest, pytest-cov, ruff
+```
+
+**From source:**
+
+```bash
+git clone https://github.com/vectorphile/vectorphile
+cd vectorphile
+pip install -e ".[dev]"
+```
+
+**Requirements:** Python >= 3.9, NumPy >= 1.24, SciPy >= 1.10
+
+---
+
+## Usage
+
+### Tensors
+
+The `Tensor` is the central primitive. All operations — arithmetic, reduction, reshaping, broadcasting — are defined on it.
+
+```python
+import vectorphile as vp
+
+x = vp.randn(3, 4)
+y = vp.ones(4, 5)
+z = x @ y                        # matrix multiply → (3, 5)
+
+t = vp.tensor([1.0, 2.0, 3.0], dtype='float32')
+t2 = t.reshape(1, 3).T           # (3, 1)
+
+# Element-wise ops with broadcasting
+a = vp.zeros(5, 1) + vp.randn(1, 8)   # (5, 8)
+
+# Reductions
+print(x.sum(axis=1, keepdims=True))
+print(x.mean(), x.std(), x.max())
+```
+
+### Automatic Differentiation
+
+The autograd engine builds a dynamic computation graph during the forward pass. Gradients are computed via reverse-mode accumulation.
+
+```python
+x = vp.tensor([2.0, 3.0], requires_grad=True)
+
+# Any composition of tensor ops is differentiable
+y = (x ** 2 + 3 * x - vp.log(x + 1)).sum()
+y.backward()
+
+print(x.grad)   # analytical: [2x + 3 - 1/(x+1)] evaluated at [2, 3]
+
+# Disable gradient tracking for inference
+with vp.no_grad():
+    pred = model(X_test)
+```
+
+### Neural Networks
+
+`vp.nn` provides composable layer primitives. Each layer is a differentiable function mapping tensors to tensors.
+
+```python
+model = vp.nn.Sequential(
+    vp.nn.Linear(784, 512),
+    vp.nn.BatchNorm1d(512),
+    vp.nn.GELU(),
+    vp.nn.Dropout(p=0.3),
+    vp.nn.Linear(512, 256),
+    vp.nn.LayerNorm(256),
+    vp.nn.ReLU(),
+    vp.nn.Linear(256, 10),
+)
+
+criterion = vp.nn.CrossEntropyLoss()
+optimizer = vp.optim.AdamW(model.parameters(), lr=1e-3, weight_decay=1e-4)
+scheduler = vp.optim.CosineAnnealingLR(optimizer, T_max=100)
+
+for epoch in range(100):
+    optimizer.zero_grad()
+    logits = model(X_train)
+    loss = criterion(logits, y_train)
+    loss.backward()
+    optimizer.step()
+    scheduler.step()
+```
+
+**Available layers:**
+- Linear, Embedding
+- Conv1d, Conv2d (Phase 2: direct CUDA kernels)
+- BatchNorm1d, BatchNorm2d, LayerNorm, GroupNorm
+- ReLU, GELU, SiLU, Tanh, Sigmoid, Softmax, LogSoftmax
+- Dropout, Dropout2d
+- MultiheadAttention (Phase 2)
+
+**Available losses:**
+- CrossEntropyLoss, NLLLoss, BCELoss, BCEWithLogitsLoss
+- MSELoss, L1Loss, HuberLoss, SmoothL1Loss
+- KLDivLoss, CosineEmbeddingLoss, TripletMarginLoss
+
+### Optimizers
+
+```python
+# First-order
+vp.optim.SGD(params, lr=0.01, momentum=0.9, nesterov=True)
+vp.optim.Adam(params, lr=1e-3, betas=(0.9, 0.999))
+vp.optim.AdamW(params, lr=1e-3, weight_decay=1e-2)
+vp.optim.RMSprop(params, lr=1e-3, alpha=0.99)
+vp.optim.Adagrad(params, lr=1e-2)
+
+# LR Schedulers
+vp.optim.StepLR(optimizer, step_size=30, gamma=0.1)
+vp.optim.CosineAnnealingLR(optimizer, T_max=100)
+vp.optim.ReduceLROnPlateau(optimizer, patience=10)
+vp.optim.OneCycleLR(optimizer, max_lr=0.01, total_steps=1000)
+```
+
+### Classical Learning Algorithms
+
+```python
+from vectorphile import ml
+
+# Data splitting
+X_train, X_test, y_train, y_test = ml.train_test_split(X, y, test_size=0.2, random_state=42)
+
+# Preprocessing
+scaler = ml.StandardScaler()
+X_train = scaler.fit_transform(X_train)
+X_test  = scaler.transform(X_test)
+
+# Ensemble methods
+clf = ml.RandomForestClassifier(n_estimators=200, max_depth=None, min_samples_split=2)
+clf.fit(X_train, y_train)
+
+# Gradient boosting
+from vectorphile.ml.boost import XGBClassifier
+bst = XGBClassifier(n_estimators=300, learning_rate=0.05, max_depth=6, reg_lambda=1.0)
+bst.fit(X_train, y_train)
+
+# Dimensionality reduction
+pca = ml.PCA(n_components=50)
+X_reduced = pca.fit_transform(X)
+
+# Clustering
+kmeans = ml.KMeans(n_clusters=8, init='k-means++', max_iter=300)
+labels = kmeans.fit_predict(X)
+
+# Evaluation
+print(ml.accuracy_score(y_test, clf.predict(X_test)))
+print(ml.classification_report(y_test, clf.predict(X_test)))
+print(ml.roc_auc_score(y_test, clf.predict_proba(X_test)[:, 1]))
+
+# Cross-validation
+scores = ml.cross_val_score(clf, X, y, cv=5, scoring='f1_weighted')
+```
+
+**Full algorithm coverage:**
+
+| Category | Algorithms |
+|---|---|
+| Linear Models | LinearRegression, Ridge, Lasso, ElasticNet, LogisticRegression, SGDClassifier, Perceptron |
+| Trees | DecisionTreeClassifier, DecisionTreeRegressor |
+| Ensembles | RandomForestClassifier, RandomForestRegressor, ExtraTreesClassifier, GradientBoostingClassifier, BaggingClassifier, VotingClassifier, StackingClassifier |
+| Boosting | XGBClassifier, XGBRegressor (histogram-based, regularized) |
+| Neighbors | KNeighborsClassifier, KNeighborsRegressor |
+| Support Vector | SVC, SVR, LinearSVC |
+| Naive Bayes | GaussianNB, MultinomialNB, BernoulliNB |
+| Clustering | KMeans, DBSCAN, AgglomerativeClustering, MeanShift, SpectralClustering |
+| Decomposition | PCA, TruncatedSVD, NMF, FastICA, FactorAnalysis |
+| Preprocessing | StandardScaler, MinMaxScaler, RobustScaler, LabelEncoder, OneHotEncoder, PolynomialFeatures |
+| Model Selection | cross_val_score, GridSearchCV, RandomizedSearchCV, StratifiedKFold |
+| Metrics | accuracy, precision, recall, f1, roc_auc, log_loss, r2, MAE, MSE, confusion_matrix |
+
+### DataFrames
+
+```python
+df = vp.read_csv('dataset.csv')
+
+# Filtering and mutation
+high_value = df[df['revenue'] > 1e6]
+df['margin'] = (df['revenue'] - df['cost']) / df['revenue']
+
+# GroupBy aggregation
+monthly = df.groupby(['year', 'month']).agg({'revenue': 'sum', 'units': 'mean'})
+
+# Merge / join
+result = df.merge(metadata, on='product_id', how='left')
+
+# Reshape
+wide = df.pivot(index='date', columns='region', values='sales')
+long = wide.melt(id_vars=['date'], var_name='region', value_name='sales')
+
+# Descriptive statistics
+df[['revenue', 'cost', 'margin']].describe()
+df[['revenue', 'margin']].corr()
+
+# I/O
+df.to_csv('output.csv', index=False)
+df.to_json('output.json', orient='records')
+```
+
+### Linear Algebra
+
+```python
+A = vp.randn(100, 100)
+
+U, S, Vt = vp.linalg.svd(A)           # singular value decomposition
+eigenvalues, eigenvectors = vp.linalg.eig(A)
+L = vp.linalg.cholesky(A.T @ A)       # Cholesky factorization
+Q, R = vp.linalg.qr(A)                # QR decomposition
+
+x = vp.linalg.solve(A, b)             # solve Ax = b
+x_lstsq = vp.linalg.lstsq(A, b)      # least-squares solution
+
+print(vp.linalg.det(A))
+print(vp.linalg.norm(A, ord='fro'))   # Frobenius norm
+print(vp.linalg.cond(A))              # condition number
+```
+
+### Statistical Inference
+
+```python
+from vectorphile import stats
+
+# Descriptive
+print(stats.mean(x), stats.std(x), stats.skewness(x), stats.kurtosis(x))
+
+# Correlation
+r_pearson, p = stats.pearsonr(x, y)
+r_spearman, p = stats.spearmanr(x, y)
+cov_matrix = stats.cov(X)
+
+# Hypothesis testing
+t_stat, p_val = stats.ttest_ind(group_a, group_b)
+chi2_stat, p_val = stats.chi2_contingency(contingency_table)
+f_stat, p_val = stats.f_oneway(g1, g2, g3)
+
+# Normalization
+z = stats.zscore(x)
+```
+
+### Signal Processing
+
+```python
+from vectorphile import fft, signal
+
+# FFT
+spectrum = fft.fft(x)
+freqs = fft.fftfreq(len(x), d=1/sample_rate)
+X2d = fft.fft2(image)
+
+# Filtering
+b, a = signal.butter(order=4, cutoff=0.1, btype='low')
+filtered = signal.filtfilt(b, a, noisy_signal)
+
+# Time-frequency
+f, t, Zxx = signal.stft(x, fs=sample_rate, nperseg=256)
+f, t, Sxx = signal.spectrogram(x, fs=sample_rate)
+
+# Convolution
+out = signal.convolve(signal_a, kernel, mode='same')
+```
+
+### DataLoader Pipeline
+
+```python
+from vectorphile.utils.data import TensorDataset, DataLoader
+
+dataset = TensorDataset(X_train, y_train)
+loader  = DataLoader(dataset, batch_size=64, shuffle=True, drop_last=False)
+
+for X_batch, y_batch in loader:
+    logits = model(X_batch)
+    loss = criterion(logits, y_batch)
+    loss.backward()
+    optimizer.step()
+    optimizer.zero_grad()
+```
+
+---
+
+## Architecture
+
+```
+vectorphile/
+├── __init__.py          ← top-level API surface
+├── core/
+│   ├── tensor.py        ← Tensor class, __array_ufunc__, operator overloads
+│   └── ops.py           ← all primitive tensor operations
+├── autograd/
+│   ├── engine.py        ← reverse-mode autodiff, Node, Graph
+│   └── functional.py    ← differentiable functional ops
+├── nn/
+│   ├── module.py        ← base Module, parameter registration
+│   ├── layers.py        ← Linear, Conv, Norm, Dropout, Embedding
+│   ├── activations.py   ← ReLU, GELU, SiLU, Softmax, etc.
+│   ├── losses.py        ← all loss functions
+│   └── sequential.py    ← Sequential container
+├── optim/
+│   ├── base.py          ← Optimizer base class
+│   ├── first_order.py   ← SGD, Adam, AdamW, RMSprop, Adagrad
+│   └── schedulers.py    ← StepLR, CosineAnnealing, OneCycle, Plateau
+├── ml/
+│   ├── linear.py        ← LinearRegression, Ridge, Lasso, Logistic
+│   ├── tree.py          ← DecisionTree (CART)
+│   ├── ensemble.py      ← RandomForest, ExtraTrees, GradientBoosting
+│   ├── boost/           ← XGBClassifier, XGBRegressor
+│   ├── cluster.py       ← KMeans, DBSCAN, Agglomerative
+│   ├── decompose.py     ← PCA, SVD, NMF, ICA
+│   ├── neighbors.py     ← KNN
+│   ├── svm.py           ← SVC, SVR
+│   ├── naive_bayes.py   ← GaussianNB, MultinomialNB
+│   ├── preprocess.py    ← scalers, encoders
+│   ├── metrics.py       ← all evaluation metrics
+│   └── model_select.py  ← CV, GridSearch, RandomSearch
+├── data/
+│   ├── frame.py         ← DataFrame
+│   ├── series.py        ← Series
+│   ├── groupby.py       ← GroupBy engine
+│   └── io.py            ← read_csv, read_json, to_csv, to_json
+├── linalg/              ← thin wrappers over LAPACK routines via NumPy
+├── stats/               ← descriptive + inferential statistics
+├── random/              ← seeded RNG, all distributions
+├── fft/                 ← FFT via NumPy backend, Phase 2: cuFFT
+├── signal/              ← DSP algorithms
+├── sparse/              ← CSR, CSC, COO sparse formats
+├── optimize/            ← minimizers, root finders, curve fitting
+├── amp/                 ← mixed-precision context (Phase 2)
+└── utils/
+    └── data/            ← Dataset, TensorDataset, DataLoader
+```
+
+---
+
+## Roadmap
+
+### v0.1–0.2 — Core (complete)
+- Full tensor API with reverse-mode autodiff
+- Complete neural network layer set (Linear, Conv, RNN, Transformer, Norm)
+- All classical ML algorithms (trees, forests, XGBoost, clustering, PCA)
+- DataFrame, GroupBy, merge/pivot
+- Linear algebra, statistics, FFT, signal, sparse, optimization
+
+### v0.3.0 — Production completeness (complete)
+- 5-tier CUDA backend dispatcher (Triton → PyTorch → Numba → im2col → NumPy)
+- BPE / WordPiece / SentencePiece tokenizers from scratch
+- Distributed training: DataParallel, DDP, MixedPrecision
+- Model export: ONNX, TorchScript, CoreML
+- Reinforcement learning: DQN, PPO, SAC, TD3
+- Pretrained weights hub (HuggingFace download, safetensors parser)
+- Architecture zoo: CNN/ResNet/EfficientNet, ViT/DeiT, Mamba/S4, VAE/DDPM, U-Net, GCN/GAT/GIN
+- Flash Attention, QAT, advanced optimizers (Lion, Sophia, Adan, Prodigy)
+
+### v0.4.0 — Ecosystem parity (complete)
+- GGUF binary format reader/writer (Q4_0, Q8_0 quantization)
+- 25+ evaluation metrics (BLEU, ROUGE, WER, ECE, NDCG, silhouette)
+- 10 training callbacks (EarlyStopping, TensorBoardLogger, WandBLogger, LRFinder)
+- Keras/Lightning-style `Trainer` + `TrainableModel` base class
+- 11 LR schedulers (`get_scheduler` factory, WarmupCosineDecay, OneCycleLR)
+- einops-compatible `rearrange`/`reduce`/`repeat`/`pack`/`unpack`/`EinMix`
+- Forward/backward hooks, `FeatureExtractor`, `GradientRecorder`
+- Text generation: beam search, nucleus, contrastive, speculative decoding, chat templates
+- Vision transforms: Compose/Resize/ColorJitter/AugMix/Normalize + ImageNet defaults
+- Datasets: MNIST, CIFAR-10, TinyShakespeare, IMDb + DataLoader/samplers
+
+### v0.5.0 — Planned
+- Real CUDA C extensions (cuBLAS GEMM, cuDNN conv)
+- fp16 / bf16 automatic mixed precision on GPU
+- Triton fused kernels in production paths
+- Multi-node distributed via NCCL
+
+---
+
+## Running Tests
+
+```bash
+pytest tests/ -v
+```
+
+The test suite covers tensor operations, autograd correctness (checked against analytical gradients), all ML algorithm outputs, DataFrame operations, and numerical routines.
+
+---
+
+## Contributing
+
+This library is in active research development. Issues, proposals, and pull requests are welcome at [github.com/vectorphile/vectorphile](https://github.com/vectorphile/vectorphile).
+
+---
+
+## License
+
+Apache-2.0
