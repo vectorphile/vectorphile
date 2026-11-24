@@ -434,8 +434,7 @@ class GradientMonitor(Callback):
 def _asarray(x):
     if hasattr(x, '_data'):
         return x._data
-    import numpy as np
-    return np.asarray(x)
+    return x
 
 
 class LRFinder(Callback):
@@ -496,10 +495,9 @@ class LRFinder(Callback):
         """Return LR at the point of steepest loss decrease."""
         if len(self.losses) < 2:
             return self.min_lr
-        import numpy as np
-        losses = np.array(self.losses)
-        grads = np.gradient(losses)
-        idx = int(np.argmin(grads))
+        losses = self.losses
+        grads = [losses[i+1] - losses[i] for i in range(len(losses) - 1)]
+        idx = min(range(len(grads)), key=lambda i: grads[i])
         return float(self.lrs[idx])
 
     def plot(self):

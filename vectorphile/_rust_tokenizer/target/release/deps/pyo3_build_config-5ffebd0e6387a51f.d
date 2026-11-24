@@ -1,0 +1,14 @@
+S:\My Data\Github\vectorphile\vectorphile\_rust_tokenizer\target\release\deps\pyo3_build_config-5ffebd0e6387a51f.d: C:\Users\saads\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\pyo3-build-config-0.25.1\src\lib.rs C:\Users\saads\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\pyo3-build-config-0.25.1\src\errors.rs C:\Users\saads\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\pyo3-build-config-0.25.1\src\impl_.rs S:\My\ Data\Github\vectorphile\vectorphile\_rust_tokenizer\target\release\build\pyo3-build-config-2e81c1ceb2874fab\out/pyo3-build-config-file.txt S:\My\ Data\Github\vectorphile\vectorphile\_rust_tokenizer\target\release\build\pyo3-build-config-2e81c1ceb2874fab\out/pyo3-build-config.txt
+
+S:\My Data\Github\vectorphile\vectorphile\_rust_tokenizer\target\release\deps\libpyo3_build_config-5ffebd0e6387a51f.rlib: C:\Users\saads\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\pyo3-build-config-0.25.1\src\lib.rs C:\Users\saads\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\pyo3-build-config-0.25.1\src\errors.rs C:\Users\saads\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\pyo3-build-config-0.25.1\src\impl_.rs S:\My\ Data\Github\vectorphile\vectorphile\_rust_tokenizer\target\release\build\pyo3-build-config-2e81c1ceb2874fab\out/pyo3-build-config-file.txt S:\My\ Data\Github\vectorphile\vectorphile\_rust_tokenizer\target\release\build\pyo3-build-config-2e81c1ceb2874fab\out/pyo3-build-config.txt
+
+S:\My Data\Github\vectorphile\vectorphile\_rust_tokenizer\target\release\deps\libpyo3_build_config-5ffebd0e6387a51f.rmeta: C:\Users\saads\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\pyo3-build-config-0.25.1\src\lib.rs C:\Users\saads\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\pyo3-build-config-0.25.1\src\errors.rs C:\Users\saads\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\pyo3-build-config-0.25.1\src\impl_.rs S:\My\ Data\Github\vectorphile\vectorphile\_rust_tokenizer\target\release\build\pyo3-build-config-2e81c1ceb2874fab\out/pyo3-build-config-file.txt S:\My\ Data\Github\vectorphile\vectorphile\_rust_tokenizer\target\release\build\pyo3-build-config-2e81c1ceb2874fab\out/pyo3-build-config.txt
+
+C:\Users\saads\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\pyo3-build-config-0.25.1\src\lib.rs:
+C:\Users\saads\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\pyo3-build-config-0.25.1\src\errors.rs:
+C:\Users\saads\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\pyo3-build-config-0.25.1\src\impl_.rs:
+S:\My\ Data\Github\vectorphile\vectorphile\_rust_tokenizer\target\release\build\pyo3-build-config-2e81c1ceb2874fab\out/pyo3-build-config-file.txt:
+S:\My\ Data\Github\vectorphile\vectorphile\_rust_tokenizer\target\release\build\pyo3-build-config-2e81c1ceb2874fab\out/pyo3-build-config.txt:
+
+# env-dep:CARGO_PKG_VERSION=0.25.1
+# env-dep:OUT_DIR=S:\\My Data\\Github\\vectorphile\\vectorphile\\_rust_tokenizer\\target\\release\\build\\pyo3-build-config-2e81c1ceb2874fab\\out

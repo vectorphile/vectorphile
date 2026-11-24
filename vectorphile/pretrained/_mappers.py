@@ -1,16 +1,31 @@
 """Weight mappers — translate HuggingFace parameter names to vectorphile names."""
 from __future__ import annotations
-
 import warnings
-from typing import Dict, Tuple
-
-import numpy as np
+from typing import Dict, Tuple, Any
 
 from vectorphile.core.tensor import Tensor
 from vectorphile.nn.module import Module
+from vectorphile._core.ndarray import array as _nd_arr, NDArray
 
 
-def _set(model: Module, attr_path: str, value: np.ndarray) -> bool:
+def _to_nd(value) -> NDArray:
+    """Convert an external array (numpy, list, etc.) to NDArray."""
+    if isinstance(value, NDArray):
+        return value
+    if hasattr(value, 'tolist'):
+        flat = value.flatten().tolist()
+        shape = tuple(value.shape)
+    elif isinstance(value, list):
+        import itertools
+        flat = list(value)
+        shape = (len(flat),)
+    else:
+        flat = [float(value)]
+        shape = (1,)
+    return _nd_arr(flat, dtype='float32').reshape(shape)
+
+
+def _set(model: Module, attr_path: str, value: Any) -> bool:
     """Set a parameter on a (possibly nested) module via dot-path.
 
     Returns True on success, False if path not found.
@@ -25,7 +40,7 @@ def _set(model: Module, attr_path: str, value: np.ndarray) -> bool:
         else:
             return False
     leaf = parts[-1]
-    t = Tensor(value.astype(np.float32))
+    t = Tensor(_to_nd(value))
     t.requires_grad = True
     if hasattr(obj, '_parameters'):
         obj._parameters[leaf] = t
@@ -40,12 +55,12 @@ def _report(name: str, mapped: int, total: int) -> None:
 
 # ── GPT-2 ──────────────────────────────────────────────────────────────────────
 
-def map_gpt2_weights(model: Module, hf: Dict[str, np.ndarray]) -> Module:
+def map_gpt2_weights(model: Module, hf: Dict[str, Any]) -> Module:
     """Map HuggingFace GPT-2 state dict to vectorphile GPT2."""
     mapped = 0
     total  = len(hf)
 
-    def try_set(vp_path: str, arr: np.ndarray) -> None:
+    def try_set(vp_path: str, arr: Any) -> None:
         nonlocal mapped
         if _set(model, vp_path, arr):
             mapped += 1
@@ -124,12 +139,12 @@ def map_gpt2_weights(model: Module, hf: Dict[str, np.ndarray]) -> Module:
 
 # ── BERT ───────────────────────────────────────────────────────────────────────
 
-def map_bert_weights(model: Module, hf: Dict[str, np.ndarray]) -> Module:
+def map_bert_weights(model: Module, hf: Dict[str, Any]) -> Module:
     """Map HuggingFace BERT state dict to vectorphile BERT."""
     mapped = 0
     total  = len(hf)
 
-    def ts(vp: str, arr: np.ndarray) -> None:
+    def ts(vp: str, arr: Any) -> None:
         nonlocal mapped
         if _set(model, vp, arr): mapped += 1
         else: warnings.warn(f'[BERT mapper] could not set {vp}', stacklevel=3)
@@ -182,7 +197,7 @@ def map_bert_weights(model: Module, hf: Dict[str, np.ndarray]) -> Module:
     return model
 
 
-def map_distilbert_weights(model: Module, hf: Dict[str, np.ndarray]) -> Module:
+def map_distilbert_weights(model: Module, hf: Dict[str, Any]) -> Module:
     """Map DistilBERT (no pooler, different key prefix)."""
     # Remap distilbert.* keys to bert.* then reuse bert mapper
     remapped = {}
@@ -201,7 +216,7 @@ def map_distilbert_weights(model: Module, hf: Dict[str, np.ndarray]) -> Module:
     return map_bert_weights(model, remapped)
 
 
-def map_roberta_weights(model: Module, hf: Dict[str, np.ndarray]) -> Module:
+def map_roberta_weights(model: Module, hf: Dict[str, Any]) -> Module:
     """RoBERTa uses same structure as BERT with 'roberta.' prefix."""
     remapped = {k.replace('roberta.', 'bert.'): v for k, v in hf.items()}
     return map_bert_weights(model, remapped)
@@ -209,12 +224,12 @@ def map_roberta_weights(model: Module, hf: Dict[str, np.ndarray]) -> Module:
 
 # ── T5 ─────────────────────────────────────────────────────────────────────────
 
-def map_t5_weights(model: Module, hf: Dict[str, np.ndarray]) -> Module:
+def map_t5_weights(model: Module, hf: Dict[str, Any]) -> Module:
     """Map HuggingFace T5 state dict to vectorphile T5."""
     mapped = 0
     total  = len(hf)
 
-    def ts(vp: str, arr: np.ndarray) -> None:
+    def ts(vp: str, arr: Any) -> None:
         nonlocal mapped
         if _set(model, vp, arr): mapped += 1
         else: warnings.warn(f'[T5 mapper] could not set {vp}', stacklevel=3)
@@ -268,12 +283,12 @@ def map_t5_weights(model: Module, hf: Dict[str, np.ndarray]) -> Module:
 
 # ── LLaMA ──────────────────────────────────────────────────────────────────────
 
-def map_llama_weights(model: Module, hf: Dict[str, np.ndarray]) -> Module:
+def map_llama_weights(model: Module, hf: Dict[str, Any]) -> Module:
     """Map HuggingFace LLaMA state dict to vectorphile LLaMA."""
     mapped = 0
     total  = len(hf)
 
-    def ts(vp: str, arr: np.ndarray) -> None:
+    def ts(vp: str, arr: Any) -> None:
         nonlocal mapped
         if _set(model, vp, arr): mapped += 1
         else: warnings.warn(f'[LLaMA mapper] could not set {vp}', stacklevel=3)
@@ -310,19 +325,19 @@ def map_llama_weights(model: Module, hf: Dict[str, np.ndarray]) -> Module:
 
 # ── Mistral ────────────────────────────────────────────────────────────────────
 
-def map_mistral_weights(model: Module, hf: Dict[str, np.ndarray]) -> Module:
+def map_mistral_weights(model: Module, hf: Dict[str, Any]) -> Module:
     """Mistral uses same structure as LLaMA."""
     return map_llama_weights(model, hf)
 
 
 # ── ViT ────────────────────────────────────────────────────────────────────────
 
-def map_vit_weights(model: Module, hf: Dict[str, np.ndarray]) -> Module:
+def map_vit_weights(model: Module, hf: Dict[str, Any]) -> Module:
     """Map HuggingFace ViT state dict to vectorphile ViT."""
     mapped = 0
     total  = len(hf)
 
-    def ts(vp: str, arr: np.ndarray) -> None:
+    def ts(vp: str, arr: Any) -> None:
         nonlocal mapped
         if _set(model, vp, arr): mapped += 1
         else: warnings.warn(f'[ViT mapper] could not set {vp}', stacklevel=3)

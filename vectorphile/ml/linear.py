@@ -1,250 +1,365 @@
-"""Linear models."""
-import numpy as np
+"""Linear models — pure Python."""
+import math
+import random as _random
 from typing import Optional
 
 
+def _col(X, j):
+    return [X[i][j] for i in range(len(X))]
+
+
+def _dot(a, b):
+    return sum(x * y for x, y in zip(a, b))
+
+
+def _mat_vec(A, v):
+    return [_dot(row, v) for row in A]
+
+
+def _transpose(A):
+    n, m = len(A), len(A[0])
+    return [[A[i][j] for i in range(n)] for j in range(m)]
+
+
+def _mat_mul(A, B):
+    n, k = len(A), len(A[0])
+    m = len(B[0])
+    C = [[0.0] * m for _ in range(n)]
+    for i in range(n):
+        for l in range(k):
+            if A[i][l] == 0.0:
+                continue
+            for j in range(m):
+                C[i][j] += A[i][l] * B[l][j]
+    return C
+
+
+def _solve(A, b):
+    """Solve Ax=b via Gaussian elimination with partial pivoting."""
+    n = len(b)
+    M = [A[i][:] + [float(b[i])] for i in range(n)]
+    for col in range(n):
+        max_row = max(range(col, n), key=lambda r: abs(M[r][col]))
+        M[col], M[max_row] = M[max_row], M[col]
+        pivot = M[col][col]
+        if abs(pivot) < 1e-15:
+            continue
+        for row in range(col + 1, n):
+            factor = M[row][col] / pivot
+            M[row] = [M[row][j] - factor * M[col][j] for j in range(n + 1)]
+    x = [0.0] * n
+    for i in range(n - 1, -1, -1):
+        x[i] = M[i][n]
+        for j in range(i + 1, n):
+            x[i] -= M[i][j] * x[j]
+        x[i] /= M[i][i] if abs(M[i][i]) > 1e-15 else 1e-15
+    return x
+
+
+def _lstsq(A, b):
+    """Solve least-squares via normal equations (A^T A) x = A^T b."""
+    AT = _transpose(A)
+    ATA = _mat_mul(AT, A)
+    ATb = _mat_vec(AT, b)
+    return _solve(ATA, ATb)
+
+
 class _BaseLinear:
-    def __init__(self):
-        self.coef_: Optional[np.ndarray] = None
-        self.intercept_: float = 0.0
+    def predict(self, X):
+        X2 = [[float(v) for v in row] for row in X]
+        return [_dot(row, self.coef_) + self.intercept_ for row in X2]
 
-    def predict(self, X) -> np.ndarray:
-        X = np.array(X)
-        return X @ self.coef_ + self.intercept_
-
-    def score(self, X, y) -> float:
-        y = np.array(y)
-        pred = self.predict(X)
-        ss_res = np.sum((y - pred) ** 2)
-        ss_tot = np.sum((y - y.mean()) ** 2)
-        return 1 - ss_res / (ss_tot + 1e-12)
+    def score(self, X, y):
+        preds = self.predict(X)
+        y2 = [float(v) for v in y]
+        mu = sum(y2) / len(y2)
+        ss_res = sum((a - b) ** 2 for a, b in zip(y2, preds))
+        ss_tot = sum((v - mu) ** 2 for v in y2)
+        return float(1 - ss_res / (ss_tot + 1e-12))
 
 
 class LinearRegression(_BaseLinear):
     def __init__(self, fit_intercept=True):
-        super().__init__()
         self.fit_intercept = fit_intercept
 
-    def fit(self, X, y) -> 'LinearRegression':
-        X, y = np.array(X, dtype=float), np.array(y, dtype=float)
+    def fit(self, X, y):
+        X2 = [[float(v) for v in row] for row in X]
+        y2 = [float(v) for v in y]
+        n, p = len(X2), len(X2[0])
         if self.fit_intercept:
-            X = np.c_[np.ones(len(X)), X]
-        sol, _, _, _ = np.linalg.lstsq(X, y, rcond=None)
-        if self.fit_intercept:
-            self.intercept_, self.coef_ = float(sol[0]), sol[1:]
+            Xa = [row + [1.0] for row in X2]
+            coeffs = _lstsq(Xa, y2)
+            self.coef_ = coeffs[:-1]
+            self.intercept_ = coeffs[-1]
         else:
-            self.coef_ = sol
+            self.coef_ = _lstsq(X2, y2)
+            self.intercept_ = 0.0
         return self
 
 
 class Ridge(_BaseLinear):
     def __init__(self, alpha=1.0, fit_intercept=True):
-        super().__init__()
         self.alpha = alpha
         self.fit_intercept = fit_intercept
 
-    def fit(self, X, y) -> 'Ridge':
-        X, y = np.array(X, dtype=float), np.array(y, dtype=float)
+    def fit(self, X, y):
+        X2 = [[float(v) for v in row] for row in X]
+        y2 = [float(v) for v in y]
+        n, p = len(X2), len(X2[0])
         if self.fit_intercept:
-            X_mean, y_mean = X.mean(0), y.mean()
-            Xc = X - X_mean
-            sol = np.linalg.solve(Xc.T @ Xc + self.alpha * np.eye(Xc.shape[1]), Xc.T @ (y - y_mean))
-            self.coef_ = sol
-            self.intercept_ = float(y_mean - X_mean @ sol)
+            x_mean = [sum(_col(X2, j)) / n for j in range(p)]
+            y_mean = sum(y2) / n
+            Xc = [[X2[i][j] - x_mean[j] for j in range(p)] for i in range(n)]
+            yc = [v - y_mean for v in y2]
         else:
-            sol = np.linalg.solve(X.T @ X + self.alpha * np.eye(X.shape[1]), X.T @ y)
-            self.coef_ = sol
+            Xc, yc, x_mean, y_mean = X2, y2, [0.0] * p, 0.0
+        AT = _transpose(Xc)
+        ATA = _mat_mul(AT, Xc)
+        for i in range(p):
+            ATA[i][i] += self.alpha
+        ATb = _mat_vec(AT, yc)
+        self.coef_ = _solve(ATA, ATb)
+        if self.fit_intercept:
+            self.intercept_ = y_mean - _dot(self.coef_, x_mean)
+        else:
+            self.intercept_ = 0.0
         return self
 
 
 class Lasso(_BaseLinear):
     def __init__(self, alpha=1.0, max_iter=1000, tol=1e-4, fit_intercept=True):
-        super().__init__()
         self.alpha = alpha
         self.max_iter = max_iter
         self.tol = tol
         self.fit_intercept = fit_intercept
 
-    def fit(self, X, y) -> 'Lasso':
-        X, y = np.array(X, dtype=float), np.array(y, dtype=float)
+    def fit(self, X, y):
+        X2 = [[float(v) for v in row] for row in X]
+        y2 = [float(v) for v in y]
+        n, p = len(X2), len(X2[0])
         if self.fit_intercept:
-            X_mean, y_mean = X.mean(0), y.mean()
-            X, y = X - X_mean, y - y_mean
-        n, p = X.shape
-        coef = np.zeros(p)
+            x_mean = [sum(_col(X2, j)) / n for j in range(p)]
+            y_mean = sum(y2) / n
+            Xc = [[X2[i][j] - x_mean[j] for j in range(p)] for i in range(n)]
+            yc = [v - y_mean for v in y2]
+        else:
+            Xc, yc, x_mean, y_mean = X2, y2, [0.0] * p, 0.0
+
+        # Precompute column norms squared
+        col_norm2 = [sum(Xc[i][j] ** 2 for i in range(n)) for j in range(p)]
+        w = [0.0] * p
         for _ in range(self.max_iter):
-            coef_old = coef.copy()
+            w_old = w[:]
+            r = [yc[i] - _dot(Xc[i], w) for i in range(n)]
             for j in range(p):
-                r = y - X @ coef + X[:, j] * coef[j]
-                rho = X[:, j] @ r
-                z = X[:, j] @ X[:, j]
-                if rho < -self.alpha * n / 2:
-                    coef[j] = (rho + self.alpha * n / 2) / z
-                elif rho > self.alpha * n / 2:
-                    coef[j] = (rho - self.alpha * n / 2) / z
+                # Add back j's contribution to residual
+                rj = [r[i] + Xc[i][j] * w[j] for i in range(n)]
+                rho = sum(Xc[i][j] * rj[i] for i in range(n))
+                cn2 = col_norm2[j]
+                if cn2 < 1e-15:
+                    w[j] = 0.0
                 else:
-                    coef[j] = 0.0
-            if np.max(np.abs(coef - coef_old)) < self.tol:
+                    thr = self.alpha * n
+                    if rho > thr:
+                        w[j] = (rho - thr) / cn2
+                    elif rho < -thr:
+                        w[j] = (rho + thr) / cn2
+                    else:
+                        w[j] = 0.0
+                r = [rj[i] - Xc[i][j] * w[j] for i in range(n)]
+            if max(abs(w[j] - w_old[j]) for j in range(p)) < self.tol:
                 break
-        self.coef_ = coef
+        self.coef_ = w
         if self.fit_intercept:
-            self.intercept_ = float(y_mean - X_mean @ coef)
+            self.intercept_ = y_mean - _dot(w, x_mean)
+        else:
+            self.intercept_ = 0.0
         return self
 
 
 class ElasticNet(_BaseLinear):
     def __init__(self, alpha=1.0, l1_ratio=0.5, max_iter=1000, tol=1e-4, fit_intercept=True):
-        super().__init__()
         self.alpha = alpha
         self.l1_ratio = l1_ratio
         self.max_iter = max_iter
         self.tol = tol
         self.fit_intercept = fit_intercept
 
-    def fit(self, X, y) -> 'ElasticNet':
-        X, y = np.array(X, dtype=float), np.array(y, dtype=float)
+    def fit(self, X, y):
+        X2 = [[float(v) for v in row] for row in X]
+        y2 = [float(v) for v in y]
+        n, p = len(X2), len(X2[0])
         if self.fit_intercept:
-            X_mean, y_mean = X.mean(0), y.mean()
-            X, y = X - X_mean, y - y_mean
-        n, p = X.shape
+            x_mean = [sum(_col(X2, j)) / n for j in range(p)]
+            y_mean = sum(y2) / n
+            Xc = [[X2[i][j] - x_mean[j] for j in range(p)] for i in range(n)]
+            yc = [v - y_mean for v in y2]
+        else:
+            Xc, yc, x_mean, y_mean = X2, y2, [0.0] * p, 0.0
+
         l1 = self.alpha * self.l1_ratio
         l2 = self.alpha * (1 - self.l1_ratio)
-        coef = np.zeros(p)
+        col_norm2 = [sum(Xc[i][j] ** 2 for i in range(n)) + l2 * n for j in range(p)]
+        w = [0.0] * p
         for _ in range(self.max_iter):
-            coef_old = coef.copy()
+            w_old = w[:]
+            r = [yc[i] - _dot(Xc[i], w) for i in range(n)]
             for j in range(p):
-                r = y - X @ coef + X[:, j] * coef[j]
-                rho = X[:, j] @ r
-                z = X[:, j] @ X[:, j] + l2 * n
-                thresh = l1 * n / 2
-                if rho < -thresh:
-                    coef[j] = (rho + thresh) / z
-                elif rho > thresh:
-                    coef[j] = (rho - thresh) / z
+                rj = [r[i] + Xc[i][j] * w[j] for i in range(n)]
+                rho = sum(Xc[i][j] * rj[i] for i in range(n))
+                cn2 = col_norm2[j]
+                thr = l1 * n
+                if rho > thr:
+                    w[j] = (rho - thr) / cn2
+                elif rho < -thr:
+                    w[j] = (rho + thr) / cn2
                 else:
-                    coef[j] = 0.0
-            if np.max(np.abs(coef - coef_old)) < self.tol:
+                    w[j] = 0.0
+                r = [rj[i] - Xc[i][j] * w[j] for i in range(n)]
+            if max(abs(w[j] - w_old[j]) for j in range(p)) < self.tol:
                 break
-        self.coef_ = coef
+        self.coef_ = w
         if self.fit_intercept:
-            self.intercept_ = float(y_mean - X_mean @ coef)
+            self.intercept_ = y_mean - _dot(w, x_mean)
+        else:
+            self.intercept_ = 0.0
         return self
 
 
 class LogisticRegression:
-    def __init__(self, C=1.0, max_iter=200, tol=1e-4, fit_intercept=True, multi_class='ovr'):
+    def __init__(self, C=1.0, max_iter=100, tol=1e-4, fit_intercept=True,
+                 multi_class='auto', solver='lbfgs'):
         self.C = C
         self.max_iter = max_iter
         self.tol = tol
         self.fit_intercept = fit_intercept
-        self.multi_class = multi_class
-        self.coef_: Optional[np.ndarray] = None
-        self.intercept_: Optional[np.ndarray] = None
-        self.classes_: Optional[np.ndarray] = None
 
-    def _sigmoid(self, z):
-        return 1.0 / (1.0 + np.exp(-np.clip(z, -500, 500)))
+    @staticmethod
+    def _sigmoid(z):
+        if z >= 0:
+            return 1.0 / (1.0 + math.exp(-z))
+        ez = math.exp(z)
+        return ez / (1.0 + ez)
 
-    def _fit_binary(self, X, y, lr=0.1):
-        n, p = X.shape
-        w = np.zeros(p + (1 if self.fit_intercept else 0))
-        for _ in range(self.max_iter):
-            if self.fit_intercept:
-                z = X @ w[1:] + w[0]
-            else:
-                z = X @ w
-            prob = self._sigmoid(z)
-            error = prob - y
-            if self.fit_intercept:
-                dw = np.concatenate([[error.mean()], X.T @ error / n + w[1:] / (self.C * n)])
-            else:
-                dw = X.T @ error / n + w / (self.C * n)
-            w -= lr * dw
-            if np.max(np.abs(dw)) < self.tol:
-                break
-        return w
-
-    def fit(self, X, y) -> 'LogisticRegression':
-        X, y = np.array(X, dtype=float), np.array(y)
-        self.classes_ = np.unique(y)
-        if len(self.classes_) == 2:
-            y_bin = (y == self.classes_[1]).astype(float)
-            w = self._fit_binary(X, y_bin)
-            if self.fit_intercept:
-                self.coef_ = w[1:][np.newaxis]
-                self.intercept_ = np.array([w[0]])
-            else:
-                self.coef_ = w[np.newaxis]
-                self.intercept_ = np.array([0.0])
+    def fit(self, X, y):
+        X2 = [[float(v) for v in row] for row in X]
+        y2 = list(y)
+        self.classes_ = sorted(set(y2))
+        K = len(self.classes_)
+        n, p = len(X2), len(X2[0])
+        lr = 0.1 / n
+        reg = 1.0 / (self.C * n)
+        if K == 2:
+            y_bin = [1.0 if v == self.classes_[1] else 0.0 for v in y2]
+            w = [0.0] * p
+            b = 0.0
+            for _ in range(self.max_iter):
+                grad_w = [0.0] * p
+                grad_b = 0.0
+                for i in range(n):
+                    z = _dot(X2[i], w) + b
+                    pred = self._sigmoid(z)
+                    err = pred - y_bin[i]
+                    for j in range(p):
+                        grad_w[j] += err * X2[i][j]
+                    grad_b += err
+                for j in range(p):
+                    grad_w[j] = grad_w[j] / n + reg * w[j]
+                    w[j] -= lr * grad_w[j]
+                b -= lr * grad_b / n
+            self.coef_ = [w]
+            self.intercept_ = [b]
         else:
+            # one-vs-rest
             self.coef_ = []
             self.intercept_ = []
-            for cls in self.classes_:
-                y_bin = (y == cls).astype(float)
-                w = self._fit_binary(X, y_bin)
-                if self.fit_intercept:
-                    self.coef_.append(w[1:])
-                    self.intercept_.append(w[0])
-                else:
-                    self.coef_.append(w)
-                    self.intercept_.append(0.0)
-            self.coef_ = np.array(self.coef_)
-            self.intercept_ = np.array(self.intercept_)
+            for c in self.classes_:
+                y_bin = [1.0 if v == c else 0.0 for v in y2]
+                w = [0.0] * p
+                b = 0.0
+                for _ in range(self.max_iter):
+                    grad_w = [0.0] * p
+                    grad_b = 0.0
+                    for i in range(n):
+                        z = _dot(X2[i], w) + b
+                        pred = self._sigmoid(z)
+                        err = pred - y_bin[i]
+                        for j in range(p):
+                            grad_w[j] += err * X2[i][j]
+                        grad_b += err
+                    for j in range(p):
+                        grad_w[j] = grad_w[j] / n + reg * w[j]
+                        w[j] -= lr * grad_w[j]
+                    b -= lr * grad_b / n
+                self.coef_.append(w)
+                self.intercept_.append(b)
         return self
 
-    def predict_proba(self, X) -> np.ndarray:
-        X = np.array(X, dtype=float)
-        logits = X @ self.coef_.T + self.intercept_
-        probs = self._sigmoid(logits)
-        if probs.ndim == 1 or probs.shape[1] == 1:
-            p = probs.flatten()
-            return np.c_[1 - p, p]
-        probs = probs / probs.sum(axis=1, keepdims=True)
-        return probs
+    def decision_function(self, X):
+        X2 = [[float(v) for v in row] for row in X]
+        scores = [[_dot(X2[i], self.coef_[k]) + self.intercept_[k]
+                   for k in range(len(self.classes_))] for i in range(len(X2))]
+        if len(self.classes_) == 2:
+            return [row[1] for row in scores]
+        return scores
 
-    def predict(self, X) -> np.ndarray:
+    def predict_proba(self, X):
+        X2 = [[float(v) for v in row] for row in X]
+        K = len(self.classes_)
+        result = []
+        for i in range(len(X2)):
+            if K == 2 and len(self.coef_) == 1:
+                # Binary: one weight vector, return [1-p, p]
+                p1 = self._sigmoid(_dot(X2[i], self.coef_[0]) + self.intercept_[0])
+                result.append([1.0 - p1, p1])
+            else:
+                scores = [_dot(X2[i], self.coef_[k]) + self.intercept_[k] for k in range(K)]
+                probs = [self._sigmoid(s) for s in scores]
+                total = sum(probs) or 1.0
+                probs = [p / total for p in probs]
+                result.append(probs)
+        return result
+
+    def predict(self, X):
         proba = self.predict_proba(X)
-        return self.classes_[np.argmax(proba, axis=1)]
+        return [self.classes_[row.index(max(row))] for row in proba]
 
-    def score(self, X, y) -> float:
-        return float(np.mean(self.predict(X) == np.array(y)))
+    def score(self, X, y):
+        preds = self.predict(X)
+        return sum(a == b for a, b in zip(preds, y)) / len(y)
 
 
 class Perceptron:
-    def __init__(self, max_iter=1000, tol=1e-3, eta=1.0, fit_intercept=True):
+    def __init__(self, max_iter=1000, tol=1e-3, eta0=1.0, random_state=None):
         self.max_iter = max_iter
         self.tol = tol
-        self.eta = eta
-        self.fit_intercept = fit_intercept
-        self.coef_: Optional[np.ndarray] = None
-        self.intercept_: float = 0.0
+        self.eta0 = eta0
+        self.random_state = random_state
 
-    def fit(self, X, y) -> 'Perceptron':
-        X, y = np.array(X, dtype=float), np.array(y)
-        classes = np.unique(y)
-        y_bin = np.where(y == classes[0], -1, 1)
-        n, p = X.shape
-        w = np.zeros(p)
-        b = 0.0
+    def fit(self, X, y):
+        X2 = [[float(v) for v in row] for row in X]
+        y2 = [1 if v > 0 else -1 for v in y]
+        n, p = len(X2), len(X2[0])
+        self.coef_ = [0.0] * p
+        self.intercept_ = 0.0
         for _ in range(self.max_iter):
             errors = 0
-            for xi, yi in zip(X, y_bin):
-                pred = np.sign(np.dot(w, xi) + b)
-                if pred != yi:
-                    w += self.eta * yi * xi
-                    b += self.eta * yi
+            for i in range(n):
+                z = _dot(X2[i], self.coef_) + self.intercept_
+                pred = 1 if z >= 0 else -1
+                if pred != y2[i]:
+                    for j in range(p):
+                        self.coef_[j] += self.eta0 * y2[i] * X2[i][j]
+                    self.intercept_ += self.eta0 * y2[i]
                     errors += 1
             if errors == 0:
                 break
-        self.coef_ = w
-        self.intercept_ = b
-        self.classes_ = classes
         return self
 
-    def predict(self, X) -> np.ndarray:
-        X = np.array(X, dtype=float)
-        raw = np.sign(X @ self.coef_ + self.intercept_)
-        return np.where(raw <= 0, self.classes_[0], self.classes_[1])
+    def predict(self, X):
+        X2 = [[float(v) for v in row] for row in X]
+        return [1 if _dot(row, self.coef_) + self.intercept_ >= 0 else -1 for row in X2]
 
-    def score(self, X, y) -> float:
-        return float(np.mean(self.predict(X) == np.array(y)))
+    def score(self, X, y):
+        preds = self.predict(X)
+        return sum(a == b for a, b in zip(preds, y)) / len(y)

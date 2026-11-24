@@ -1,350 +1,266 @@
-"""LightGBM-inspired gradient boosting with leaf-wise tree growth."""
-from __future__ import annotations
-import numpy as np
-from typing import Optional, List
+"""LightGBM-style gradient boosting — pure Python."""
+import math
+import random as _random
+from typing import Optional
+
+
+def _col(X, j):
+    return [X[i][j] for i in range(len(X))]
+
+
+def _uniq_sorted(seq):
+    return sorted(set(seq))
 
 
 class _LeafTree:
-    """Leaf-wise tree with histogram-based splits."""
-    def __init__(self, max_leaves=31, max_depth=-1, min_child_samples=20,
-                 min_child_weight=1e-3, reg_lambda=0.1, reg_alpha=0.0,
-                 subsample_feature=1.0):
-        self.max_leaves = max_leaves
-        self.max_depth = max_depth
-        self.min_child_samples = min_child_samples
-        self.min_child_weight = min_child_weight
-        self.reg_lambda = reg_lambda
-        self.reg_alpha = reg_alpha
-        self.subsample_feature = subsample_feature
-        self.leaves = {}      # leaf_id -> prediction value
-        self.splits = {}      # node_id -> (feature_idx, threshold, left_child, right_child)
-        self.root = 0
-        self._next_id = 0
+    """Histogram-based leaf-wise tree."""
 
-    def _leaf_weight(self, grad, hess):
-        g, h = grad.sum(), hess.sum()
-        return -g / (h + self.reg_lambda)
-
-    def _split_gain(self, grad_l, hess_l, grad_r, hess_r):
-        gl, hl = grad_l.sum(), hess_l.sum()
-        gr, hr = grad_r.sum(), hess_r.sum()
-        g, h = gl + gr, hl + hr
-        def score(g, h): return g**2 / (h + self.reg_lambda)
-        return 0.5 * (score(gl, hl) + score(gr, hr) - score(g, h)) - self.reg_alpha
+    def __init__(self, num_leaves=31, min_data_in_leaf=20, max_bin=255):
+        self.num_leaves = num_leaves
+        self.min_data_in_leaf = min_data_in_leaf
+        self.max_bin = max_bin
+        self.tree = None
 
     def fit(self, X, grad, hess):
-        n, m = X.shape
-        # Start with one leaf covering all samples
-        self._next_id = 0
-        all_idx = np.arange(n)
-        # Beam: list of (node_id, indices, depth)
-        queue = [(self._new_node(), all_idx, 0)]
-        self.leaves = {}
-        self.splits = {}
-
-        # Grow leaves one at a time, always picking best gain
-        active_leaves = []
-        for node_id, idx, depth in queue:
-            active_leaves.append((node_id, idx, depth))
-        self.leaves = {node_id: self._leaf_weight(grad[idx], hess[idx]) for node_id, idx, depth in active_leaves}
-
-        for _ in range(self.max_leaves - 1):
-            best_gain = -1e9
-            best_leaf = None
-            best_split = None
-            for leaf_id, idx, depth in active_leaves:
-                if (self.max_depth > 0 and depth >= self.max_depth) or len(idx) < 2 * self.min_child_samples:
-                    continue
-                feat_indices = np.arange(m)
-                if self.subsample_feature < 1.0:
-                    k = max(1, int(m * self.subsample_feature))
-                    feat_indices = np.random.choice(m, k, replace=False)
-                for f in feat_indices:
-                    thresholds = np.unique(X[idx, f])
-                    if len(thresholds) < 2:
-                        continue
-                    thresholds = (thresholds[:-1] + thresholds[1:]) / 2
-                    for t in thresholds:
-                        left_mask = X[idx, f] <= t
-                        right_mask = ~left_mask
-                        if left_mask.sum() < self.min_child_samples or right_mask.sum() < self.min_child_samples:
-                            continue
-                        gain = self._split_gain(grad[idx[left_mask]], hess[idx[left_mask]],
-                                                grad[idx[right_mask]], hess[idx[right_mask]])
-                        if gain > best_gain:
-                            best_gain = gain
-                            best_leaf = (leaf_id, idx, depth)
-                            best_split = (f, t, left_mask)
-
-            if best_leaf is None or best_gain <= 0:
-                break
-
-            leaf_id, idx, depth = best_leaf
-            f, t, left_mask = best_split
-            left_node = self._new_node()
-            right_node = self._new_node()
-            self.splits[leaf_id] = (f, t, left_node, right_node)
-            del self.leaves[leaf_id]
-            left_idx = idx[left_mask]
-            right_idx = idx[~left_mask]
-            self.leaves[left_node] = self._leaf_weight(grad[left_idx], hess[left_idx])
-            self.leaves[right_node] = self._leaf_weight(grad[right_idx], hess[right_idx])
-            active_leaves = [(lid, ix, d) if lid != leaf_id else None for lid, ix, d in active_leaves]
-            active_leaves = [x for x in active_leaves if x is not None]
-            active_leaves.append((left_node, left_idx, depth + 1))
-            active_leaves.append((right_node, right_idx, depth + 1))
-
-    def _new_node(self):
-        nid = self._next_id
-        self._next_id += 1
-        return nid
-
-    def predict(self, X):
-        n = X.shape[0]
-        preds = np.zeros(n, dtype=np.float64)
-        for i in range(n):
-            node = self.root
-            while node in self.splits:
-                f, t, left, right = self.splits[node]
-                node = left if X[i, f] <= t else right
-            preds[i] = self.leaves.get(node, 0.0)
-        return preds
-
-
-class LGBMClassifier:
-    """LightGBM-style gradient boosting classifier with leaf-wise growth."""
-    def __init__(self, n_estimators=100, learning_rate=0.1, num_leaves=31,
-                 max_depth=-1, min_child_samples=20, subsample=1.0,
-                 colsample_bytree=1.0, reg_alpha=0.0, reg_lambda=0.1,
-                 random_state=None, early_stopping_rounds=None, verbose=-1):
-        self.n_estimators = n_estimators
-        self.learning_rate = learning_rate
-        self.num_leaves = num_leaves
-        self.max_depth = max_depth
-        self.min_child_samples = min_child_samples
-        self.subsample = subsample
-        self.colsample_bytree = colsample_bytree
-        self.reg_alpha = reg_alpha
-        self.reg_lambda = reg_lambda
-        self.random_state = random_state
-        self.early_stopping_rounds = early_stopping_rounds
-        self.verbose = verbose
-        self.trees_: List = []
-        self.classes_: np.ndarray = None
-        self.feature_importances_: np.ndarray = None
-        self._init_score = 0.0
-
-    def _sigmoid(self, x): return 1.0 / (1.0 + np.exp(-x))
-
-    def fit(self, X, y, eval_set=None, callbacks=None):
-        if self.random_state is not None:
-            np.random.seed(self.random_state)
-        X = np.array(X, dtype=np.float64)
-        y = np.array(y)
-        self.classes_ = np.unique(y)
-        y_bin = (y == self.classes_[-1]).astype(np.float64)
-        p = y_bin.mean()
-        self._init_score = np.log(p / (1 - p + 1e-12))
-        F = np.full(len(y), self._init_score, dtype=np.float64)
-        self.trees_ = []
-        self.feature_importances_ = np.zeros(X.shape[1])
-        best_val_loss = np.inf
-        rounds_no_improve = 0
-        for t in range(self.n_estimators):
-            if self.subsample < 1.0:
-                idx = np.random.choice(len(y), int(len(y)*self.subsample), replace=False)
-                Xs, Fs, ys = X[idx], F[idx], y_bin[idx]
-            else:
-                Xs, Fs, ys = X, F, y_bin
-            probs = self._sigmoid(Fs)
-            grad = probs - ys
-            hess = probs * (1 - probs) + 1e-6
-            tree = _LeafTree(self.num_leaves, self.max_depth, self.min_child_samples,
-                             reg_lambda=self.reg_lambda, reg_alpha=self.reg_alpha,
-                             subsample_feature=self.colsample_bytree)
-            tree.fit(Xs, grad, hess)
-            preds = tree.predict(X)
-            F += self.learning_rate * preds
-            self.trees_.append(tree)
-            # Feature importance (split counts)
-            for node_id, (f, t, l, r) in tree.splits.items():
-                self.feature_importances_[f] += 1
-            if eval_set and self.early_stopping_rounds:
-                Xv, yv = eval_set[0]
-                yv_bin = (np.array(yv) == self.classes_[-1]).astype(np.float64)
-                probs_v = self._sigmoid(self.predict_proba(np.array(Xv, dtype=np.float64))[:, 1])
-                val_loss = -np.mean(yv_bin * np.log(probs_v + 1e-12) + (1-yv_bin) * np.log(1-probs_v+1e-12))
-                if val_loss < best_val_loss - 1e-5:
-                    best_val_loss = val_loss
-                    rounds_no_improve = 0
-                else:
-                    rounds_no_improve += 1
-                if rounds_no_improve >= self.early_stopping_rounds:
-                    if self.verbose >= 0:
-                        print(f'Early stopping at round {t+1}')
-                    break
+        n, p = len(X), len(X[0])
+        # Simple depth-limited tree via best-split, leaf limited by num_leaves
+        self.tree = self._build(list(range(n)), X, grad, hess, 0)
         return self
 
-    def _raw_predict(self, X):
-        F = np.full(len(X), self._init_score, dtype=np.float64)
-        for tree in self.trees_:
-            F += self.learning_rate * tree.predict(X)
-        return F
+    def _gain(self, g_L, h_L, g_R, h_R, lam=1e-3):
+        def val(g, h):
+            return (g ** 2) / (h + lam) if (h + lam) > 0 else 0.0
+        return 0.5 * (val(g_L, h_L) + val(g_R, h_R) - val(g_L + g_R, h_L + h_R))
 
-    def predict_proba(self, X):
-        X = np.array(X, dtype=np.float64)
-        F = self._raw_predict(X)
-        p = self._sigmoid(F)
-        return np.column_stack([1-p, p])
+    def _build(self, idxs, X, grad, hess, depth):
+        if len(idxs) <= self.min_data_in_leaf or depth >= int(math.log2(max(self.num_leaves, 1)) + 1):
+            g = sum(grad[i] for i in idxs)
+            h = sum(hess[i] for i in idxs)
+            return {'leaf': True, 'value': -g / (h + 1e-3)}
+        n, p = len(X), len(X[0])
+        best_gain, best_feat, best_thresh = -float('inf'), None, None
+        for feat in range(p):
+            vals = sorted(set(_col([X[i] for i in idxs], feat)))
+            for t in range(len(vals) - 1):
+                thresh = (vals[t] + vals[t + 1]) / 2
+                left = [i for i in idxs if X[i][feat] <= thresh]
+                right = [i for i in idxs if X[i][feat] > thresh]
+                if len(left) < self.min_data_in_leaf or len(right) < self.min_data_in_leaf:
+                    continue
+                g_L = sum(grad[i] for i in left)
+                h_L = sum(hess[i] for i in left)
+                g_R = sum(grad[i] for i in right)
+                h_R = sum(hess[i] for i in right)
+                gain = self._gain(g_L, h_L, g_R, h_R)
+                if gain > best_gain:
+                    best_gain, best_feat, best_thresh = gain, feat, thresh
+        if best_feat is None:
+            g = sum(grad[i] for i in idxs)
+            h = sum(hess[i] for i in idxs)
+            return {'leaf': True, 'value': -g / (h + 1e-3)}
+        left = [i for i in idxs if X[i][best_feat] <= best_thresh]
+        right = [i for i in idxs if X[i][best_feat] > best_thresh]
+        return {
+            'leaf': False,
+            'feat': best_feat,
+            'thresh': best_thresh,
+            'left': self._build(left, X, grad, hess, depth + 1),
+            'right': self._build(right, X, grad, hess, depth + 1),
+        }
+
+    def _predict_one(self, x, node):
+        if node['leaf']:
+            return node['value']
+        if x[node['feat']] <= node['thresh']:
+            return self._predict_one(x, node['left'])
+        return self._predict_one(x, node['right'])
 
     def predict(self, X):
-        proba = self.predict_proba(X)
-        return self.classes_[np.argmax(proba, axis=1)]
-
-    def score(self, X, y):
-        return float(np.mean(self.predict(X) == np.array(y)))
-
-    def __repr__(self):
-        return f'LGBMClassifier(n_estimators={self.n_estimators}, learning_rate={self.learning_rate}, num_leaves={self.num_leaves})'
+        return [self._predict_one(x, self.tree) for x in X]
 
 
 class LGBMRegressor:
-    """LightGBM-style gradient boosting regressor."""
     def __init__(self, n_estimators=100, learning_rate=0.1, num_leaves=31,
-                 max_depth=-1, min_child_samples=20, subsample=1.0,
-                 colsample_bytree=1.0, reg_alpha=0.0, reg_lambda=0.1,
-                 random_state=None, early_stopping_rounds=None, verbose=-1):
+                 min_data_in_leaf=20, subsample=1.0, colsample_bytree=1.0,
+                 reg_lambda=1.0, reg_alpha=0.0, random_state=None, n_jobs=None):
         self.n_estimators = n_estimators
         self.learning_rate = learning_rate
         self.num_leaves = num_leaves
-        self.max_depth = max_depth
-        self.min_child_samples = min_child_samples
+        self.min_data_in_leaf = min_data_in_leaf
         self.subsample = subsample
         self.colsample_bytree = colsample_bytree
-        self.reg_alpha = reg_alpha
         self.reg_lambda = reg_lambda
         self.random_state = random_state
-        self.early_stopping_rounds = early_stopping_rounds
-        self.verbose = verbose
-        self.trees_: List = []
-        self.feature_importances_: np.ndarray = None
-        self._init_score = 0.0
 
-    def fit(self, X, y, eval_set=None, callbacks=None):
-        if self.random_state is not None:
-            np.random.seed(self.random_state)
-        X = np.array(X, dtype=np.float64)
-        y = np.array(y, dtype=np.float64)
-        self._init_score = y.mean()
-        F = np.full(len(y), self._init_score, dtype=np.float64)
-        self.trees_ = []
-        self.feature_importances_ = np.zeros(X.shape[1])
-        best_val_loss = np.inf
-        rounds_no_improve = 0
-        for t in range(self.n_estimators):
+    def fit(self, X, y, eval_set=None):
+        X2 = [[float(v) for v in row] for row in X]
+        y2 = [float(v) for v in y]
+        n = len(y2)
+        self.init_score_ = sum(y2) / n
+        F = [self.init_score_] * n
+        rng = _random.Random(self.random_state)
+        self.estimators_ = []
+        for _ in range(self.n_estimators):
+            grad = [F[i] - y2[i] for i in range(n)]
+            hess = [1.0] * n
             if self.subsample < 1.0:
-                idx = np.random.choice(len(y), int(len(y)*self.subsample), replace=False)
-                Xs, Fs, ys = X[idx], F[idx], y[idx]
+                n_sub = max(1, int(n * self.subsample))
+                idxs = rng.sample(range(n), n_sub)
+                Xs = [X2[i] for i in idxs]
+                gs = [grad[i] for i in idxs]
+                hs = [hess[i] for i in idxs]
             else:
-                Xs, Fs, ys = X, F, y
-            grad = Fs - ys
-            hess = np.ones_like(grad)
-            tree = _LeafTree(self.num_leaves, self.max_depth, self.min_child_samples,
-                             reg_lambda=self.reg_lambda, reg_alpha=self.reg_alpha,
-                             subsample_feature=self.colsample_bytree)
-            tree.fit(Xs, grad, hess)
-            preds = tree.predict(X)
-            F += self.learning_rate * preds
-            self.trees_.append(tree)
-            for node_id, (f, t2, l, r) in tree.splits.items():
-                self.feature_importances_[f] += 1
-            if eval_set and self.early_stopping_rounds:
-                Xv, yv = eval_set[0]
-                val_preds = self.predict(np.array(Xv, dtype=np.float64))
-                val_loss = np.mean((val_preds - np.array(yv))**2)
-                if val_loss < best_val_loss - 1e-6:
-                    best_val_loss = val_loss
-                    rounds_no_improve = 0
-                else:
-                    rounds_no_improve += 1
-                if rounds_no_improve >= self.early_stopping_rounds:
-                    if self.verbose >= 0:
-                        print(f'Early stopping at round {t+1}')
-                    break
+                Xs, gs, hs = X2, grad, hess
+            tree = _LeafTree(num_leaves=self.num_leaves, min_data_in_leaf=self.min_data_in_leaf)
+            tree.fit(Xs, gs, hs)
+            preds = tree.predict(X2)
+            for i in range(n):
+                F[i] += self.learning_rate * preds[i]
+            self.estimators_.append(tree)
         return self
 
     def predict(self, X):
-        X = np.array(X, dtype=np.float64)
-        F = np.full(len(X), self._init_score, dtype=np.float64)
-        for tree in self.trees_:
-            F += self.learning_rate * tree.predict(X)
-        return F.astype(np.float32)
+        X2 = [[float(v) for v in row] for row in X]
+        n = len(X2)
+        F = [self.init_score_] * n
+        for tree in self.estimators_:
+            preds = tree.predict(X2)
+            for i in range(n):
+                F[i] += self.learning_rate * preds[i]
+        return F
 
     def score(self, X, y):
-        y = np.array(y, dtype=np.float64)
-        preds = self.predict(X).astype(np.float64)
-        ss_res = np.sum((y - preds)**2)
-        ss_tot = np.sum((y - y.mean())**2)
+        preds = self.predict(X)
+        y2 = [float(v) for v in y]
+        mu = sum(y2) / len(y2)
+        ss_res = sum((a - b) ** 2 for a, b in zip(y2, preds))
+        ss_tot = sum((v - mu) ** 2 for v in y2)
         return float(1 - ss_res / (ss_tot + 1e-12))
 
-    def __repr__(self):
-        return f'LGBMRegressor(n_estimators={self.n_estimators}, learning_rate={self.learning_rate}, num_leaves={self.num_leaves})'
+
+class LGBMClassifier:
+    def __init__(self, n_estimators=100, learning_rate=0.1, num_leaves=31,
+                 min_data_in_leaf=20, subsample=1.0, random_state=None, n_jobs=None,
+                 num_class=None):
+        self.n_estimators = n_estimators
+        self.learning_rate = learning_rate
+        self.num_leaves = num_leaves
+        self.min_data_in_leaf = min_data_in_leaf
+        self.subsample = subsample
+        self.random_state = random_state
+
+    @staticmethod
+    def _softmax(scores):
+        mx = max(scores)
+        exps = [math.exp(s - mx) for s in scores]
+        total = sum(exps)
+        return [e / total for e in exps]
+
+    @staticmethod
+    def _sigmoid(z):
+        if z >= 0:
+            return 1.0 / (1.0 + math.exp(-z))
+        ez = math.exp(z)
+        return ez / (1.0 + ez)
+
+    def fit(self, X, y, eval_set=None):
+        X2 = [[float(v) for v in row] for row in X]
+        y2 = list(y)
+        self.classes_ = _uniq_sorted(y2)
+        K = len(self.classes_)
+        n = len(y2)
+        rng = _random.Random(self.random_state)
+        # F[k][i] = raw score for class k at sample i
+        F = [[0.0] * n for _ in range(K)]
+        self.estimators_ = [[] for _ in range(K)]
+        for _ in range(self.n_estimators):
+            probs = [self._softmax([F[k][i] for k in range(K)]) for i in range(n)]
+            for k in range(K):
+                y_k = [1.0 if y2[i] == self.classes_[k] else 0.0 for i in range(n)]
+                grad = [probs[i][k] - y_k[i] for i in range(n)]
+                hess = [max(probs[i][k] * (1 - probs[i][k]), 1e-6) for i in range(n)]
+                if self.subsample < 1.0:
+                    n_sub = max(1, int(n * self.subsample))
+                    idxs = rng.sample(range(n), n_sub)
+                    Xs = [X2[i] for i in idxs]
+                    gs = [grad[i] for i in idxs]
+                    hs = [hess[i] for i in idxs]
+                else:
+                    Xs, gs, hs = X2, grad, hess
+                tree = _LeafTree(num_leaves=self.num_leaves, min_data_in_leaf=self.min_data_in_leaf)
+                tree.fit(Xs, gs, hs)
+                preds = tree.predict(X2)
+                for i in range(n):
+                    F[k][i] += self.learning_rate * preds[i]
+                self.estimators_[k].append(tree)
+        return self
+
+    def predict_proba(self, X):
+        X2 = [[float(v) for v in row] for row in X]
+        n = len(X2)
+        K = len(self.classes_)
+        F = [[0.0] * n for _ in range(K)]
+        for k in range(K):
+            for tree in self.estimators_[k]:
+                preds = tree.predict(X2)
+                for i in range(n):
+                    F[k][i] += self.learning_rate * preds[i]
+        return [self._softmax([F[k][i] for k in range(K)]) for i in range(n)]
+
+    def predict(self, X):
+        proba = self.predict_proba(X)
+        return [self.classes_[row.index(max(row))] for row in proba]
+
+    def score(self, X, y):
+        preds = self.predict(X)
+        return sum(a == b for a, b in zip(preds, y)) / len(y)
 
 
 class LGBMRanker:
-    """LightGBM-style LambdaRank for learning-to-rank tasks."""
     def __init__(self, n_estimators=100, learning_rate=0.1, num_leaves=31,
-                 max_depth=-1, reg_lambda=0.1, random_state=None):
+                 min_data_in_leaf=20, random_state=None):
         self.n_estimators = n_estimators
         self.learning_rate = learning_rate
         self.num_leaves = num_leaves
-        self.max_depth = max_depth
-        self.reg_lambda = reg_lambda
+        self.min_data_in_leaf = min_data_in_leaf
         self.random_state = random_state
-        self.trees_ = []
-        self._init_score = 0.0
 
-    def fit(self, X, y, group=None):
-        if self.random_state is not None:
-            np.random.seed(self.random_state)
-        X = np.array(X, dtype=np.float64)
-        y = np.array(y, dtype=np.float64)
-        self._init_score = 0.0
-        F = np.zeros(len(y), dtype=np.float64)
-        for t in range(self.n_estimators):
-            # Pairwise gradient via sigmoid(score_i - score_j) for misranked pairs
-            grad = np.zeros(len(y))
-            hess = np.zeros(len(y))
-            if group is None:
-                pairs = [(i, j) for i in range(len(y)) for j in range(i+1, len(y)) if y[i] != y[j]]
-            else:
-                pairs = []
-                start = 0
-                for g in group:
-                    for i in range(start, start+g):
-                        for j in range(i+1, start+g):
-                            if y[i] != y[j]:
-                                pairs.append((i, j))
-                    start += g
-            for i, j in pairs:
-                s = F[i] - F[j] if y[i] > y[j] else F[j] - F[i]
-                sig = 1.0 / (1.0 + np.exp(s))
-                if y[i] > y[j]:
-                    grad[i] -= sig; grad[j] += sig
-                else:
-                    grad[j] -= sig; grad[i] += sig
-                hess[i] += sig * (1 - sig)
-                hess[j] += sig * (1 - sig)
-            hess = np.maximum(hess, 1e-6)
-            tree = _LeafTree(self.num_leaves, self.max_depth, reg_lambda=self.reg_lambda)
-            tree.fit(X, grad, hess)
-            F += self.learning_rate * tree.predict(X)
-            self.trees_.append(tree)
+    def fit(self, X, y, group=None, eval_set=None):
+        X2 = [[float(v) for v in row] for row in X]
+        y2 = [float(v) for v in y]
+        n = len(y2)
+        rng = _random.Random(self.random_state)
+        self.init_score_ = 0.0
+        F = [0.0] * n
+        self.estimators_ = []
+        for _ in range(self.n_estimators):
+            # Pairwise gradient (LambdaRank approximation)
+            grad = [0.0] * n
+            hess = [1.0] * n
+            for i in range(n):
+                for j in range(n):
+                    if y2[i] > y2[j]:
+                        s = F[i] - F[j]
+                        p = 1.0 / (1.0 + math.exp(-s)) if s > -100 else 0.0
+                        g = p - 1.0
+                        grad[i] += g
+                        grad[j] -= g
+                        hess[i] += max(p * (1 - p), 1e-6)
+                        hess[j] += max(p * (1 - p), 1e-6)
+            tree = _LeafTree(num_leaves=self.num_leaves, min_data_in_leaf=self.min_data_in_leaf)
+            tree.fit(X2, grad, hess)
+            preds = tree.predict(X2)
+            for i in range(n):
+                F[i] += self.learning_rate * preds[i]
+            self.estimators_.append(tree)
         return self
 
     def predict(self, X):
-        X = np.array(X, dtype=np.float64)
-        F = np.zeros(len(X), dtype=np.float64)
-        for tree in self.trees_:
-            F += self.learning_rate * tree.predict(X)
-        return F.astype(np.float32)
+        X2 = [[float(v) for v in row] for row in X]
+        n = len(X2)
+        F = [0.0] * n
+        for tree in self.estimators_:
+            preds = tree.predict(X2)
+            for i in range(n):
+                F[i] += self.learning_rate * preds[i]
+        return F

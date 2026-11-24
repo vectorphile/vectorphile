@@ -1,7 +1,6 @@
 """SGD optimizer with momentum and weight decay."""
-import numpy as np
 from vectorphile.optim.optimizer import Optimizer
-from vectorphile.core.tensor import Tensor
+from vectorphile.optim.adam import _to_np, _write_back, _vec_scale, _vec_add, _vec_sub
 
 
 class SGD(Optimizer):
@@ -21,18 +20,21 @@ class SGD(Optimizer):
             for p in group['params']:
                 if p.grad is None:
                     continue
-                g = p.grad._data.copy()
+                g, sh = _to_np(p.grad._data)
+                g = g[:]
+                p_flat, p_sh = _to_np(p._data)
                 if weight_decay != 0:
-                    g += weight_decay * p._data
+                    g = _vec_add(g, _vec_scale(p_flat, weight_decay))
                 pid = id(p)
                 if momentum != 0:
+                    n = len(g)
                     if pid not in self.state:
-                        self.state[pid] = {'momentum_buffer': np.zeros_like(p._data)}
+                        self.state[pid] = {'momentum_buffer': [0.0] * n}
                     buf = self.state[pid]['momentum_buffer']
-                    buf *= momentum
-                    buf += (1 - dampening) * g
+                    buf = _vec_add(_vec_scale(buf, momentum), _vec_scale(g, 1 - dampening))
+                    self.state[pid]['momentum_buffer'] = buf
                     if nesterov:
-                        g = g + momentum * buf
+                        g = _vec_add(g, _vec_scale(buf, momentum))
                     else:
                         g = buf
-                p._data -= lr * g
+                _write_back(p, _vec_sub(p_flat, _vec_scale(g, lr)), p_sh)

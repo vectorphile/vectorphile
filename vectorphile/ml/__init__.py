@@ -40,6 +40,10 @@ from vectorphile.ml.feature_selection import (
     chi2, f_classif, f_regression, mutual_info_classif, mutual_info_regression,
 )
 from vectorphile.ml.manifold import TSNE, MDS, Isomap, LocallyLinearEmbedding, SpectralEmbedding, UMAP
+from vectorphile.ml.gaussian_process import (
+    GaussianProcessRegressor, GaussianProcessClassifier, BayesianOptimization,
+    RBFKernel, MaternKernel, PeriodicKernel, LinearKernel, PolynomialKernel,
+)
 
 __all__ = [
     # Linear

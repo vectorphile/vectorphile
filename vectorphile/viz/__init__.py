@@ -1,6 +1,6 @@
 """Visualization — Matplotlib/Seaborn-inspired API with vectorphile aesthetics."""
 from __future__ import annotations
-import numpy as np
+import math
 from typing import Optional, Union, List, Tuple
 
 try:
@@ -11,6 +11,27 @@ try:
     _HAS_MPL = True
 except ImportError:
     _HAS_MPL = False
+
+
+def _to_list(x):
+    if hasattr(x, 'to_flat_list'): return x.to_flat_list()
+    if hasattr(x, '_data') and hasattr(x._data, 'to_flat_list'): return x._data.to_flat_list()
+    if isinstance(x, (list, tuple)): return list(x)
+    try: return list(x)
+    except: return [float(x)]
+
+def _unique_sorted(lst):
+    seen = set(); out = []
+    for v in lst:
+        if v not in seen: seen.add(v); out.append(v)
+    return sorted(out)
+
+def _argsort(lst):
+    return sorted(range(len(lst)), key=lambda i: lst[i])
+
+def _mean(lst): return sum(lst)/max(len(lst),1)
+def _std(lst):
+    mu=_mean(lst); return (sum((v-mu)**2 for v in lst)/max(len(lst)-1,1))**0.5
 
 
 def _require_mpl():
@@ -125,12 +146,12 @@ def scatter(x, y, hue=None, size=None, label=None, color=None, alpha=0.7,
     ax = ax or _plt.gca()
     pal = PALETTES.get(palette or _current_palette, PALETTES[_current_palette])
     if hue is not None:
-        hue = np.array(hue)
-        unique = np.unique(hue)
+        hue_l = _to_list(hue); xl = _to_list(x); yl = _to_list(y)
+        unique = _unique_sorted(hue_l)
         for i, val in enumerate(unique):
-            mask = hue == val
-            ax.scatter(np.array(x)[mask], np.array(y)[mask],
-                       label=str(val), color=pal[i % len(pal)], alpha=alpha, s=s, **kwargs)
+            xi = [xl[j] for j in range(len(hue_l)) if hue_l[j]==val]
+            yi = [yl[j] for j in range(len(hue_l)) if hue_l[j]==val]
+            ax.scatter(xi, yi, label=str(val), color=pal[i % len(pal)], alpha=alpha, s=s, **kwargs)
         ax.legend(framealpha=0.1, edgecolor='none')
     else:
         c = color or pal[0]
@@ -174,9 +195,10 @@ def histogram(data, bins=30, density=False, kde=False, label=None, color=None,
                            color=color, alpha=alpha, **kwargs)
     if kde:
         from scipy.stats import gaussian_kde as _kde
-        x_range = np.linspace(np.min(data), np.max(data), 200)
-        kde_fn = _kde(np.array(data).flatten())
-        scale = 1.0 if density else (len(data) * (edges[1] - edges[0]))
+        dl = _to_list(data)
+        x_range = [min(dl)+(max(dl)-min(dl))*i/199 for i in range(200)]
+        kde_fn = _kde(dl)
+        scale = 1.0 if density else (len(dl) * (edges[1] - edges[0]))
         ax.plot(x_range, kde_fn(x_range) * scale, color=color, linewidth=2)
     if label:
         ax.legend(framealpha=0.1, edgecolor='none')
@@ -223,15 +245,19 @@ def heatmap(data, annot=False, fmt='.2f', cmap='viridis', vmin=None, vmax=None,
     _require_mpl()
     _apply_theme(_current_theme)
     ax = ax or _plt.gca()
-    data = np.array(data)
-    im = ax.imshow(data, aspect='auto', cmap=cmap, vmin=vmin, vmax=vmax, **kwargs)
+    data_l = data if isinstance(data, list) else _to_list(data)
+    im = ax.imshow(data_l, aspect='auto', cmap=cmap, vmin=vmin, vmax=vmax, **kwargs)
     if cbar:
         _plt.colorbar(im, ax=ax)
     if annot:
-        for i in range(data.shape[0]):
-            for j in range(data.shape[1]):
-                ax.text(j, i, f'{data[i, j]:{fmt}}', ha='center', va='center',
-                        fontsize=7, color='white' if data[i, j] < (data.max() + data.min()) / 2 else 'black')
+        rows = data_l; nr = len(rows); nc = len(rows[0]) if rows else 0
+        flat_all = [v for row in rows for v in (row if isinstance(row,list) else [row])]
+        mn = min(flat_all); mx2 = max(flat_all); mid = (mn+mx2)/2
+        for i in range(nr):
+            for j in range(nc):
+                v = rows[i][j] if isinstance(rows[i],list) else rows[i]
+                ax.text(j, i, f'{v:{fmt}}', ha='center', va='center',
+                        fontsize=7, color='white' if v < mid else 'black')
     if xticklabels is not None:
         ax.set_xticks(range(len(xticklabels)))
         ax.set_xticklabels(xticklabels, rotation=45, ha='right', fontsize=8)
@@ -285,8 +311,8 @@ def kdeplot(data, bw_method='scott', color=None, fill=False, alpha=0.3,
     color = color or PALETTES[_current_palette][0]
     try:
         from scipy.stats import gaussian_kde as _kde
-        data = np.array(data).flatten()
-        x_range = np.linspace(data.min(), data.max(), 200)
+        data = _to_list(data)
+        x_range = [min(data)+(max(data)-min(data))*i/199 for i in range(200)]
         kde_fn = _kde(data, bw_method=bw_method)
         vals = kde_fn(x_range)
         ax.plot(x_range, vals, color=color, label=label, linewidth=2, **kwargs)
@@ -302,18 +328,19 @@ def kdeplot(data, bw_method='scott', color=None, fill=False, alpha=0.3,
 def pairplot(data, labels=None, palette=None, figsize=None, **kwargs):
     _require_mpl()
     _apply_theme(_current_theme)
-    data = np.array(data)
-    n = data.shape[1]
+    data_l = [_to_list(row) if not isinstance(row,list) else row for row in data]
+    n = len(data_l[0]) if data_l else 0
     labels = labels or [f'var{i}' for i in range(n)]
     fig, axes = _plt.subplots(n, n, figsize=figsize or (3*n, 3*n))
     pal = PALETTES.get(palette or _current_palette, PALETTES[_current_palette])
     for i in range(n):
         for j in range(n):
-            ax = axes[i, j] if n > 1 else axes
+            ax = axes[i][j] if n > 1 else axes
+            col_i = [row[i] for row in data_l]; col_j = [row[j] for row in data_l]
             if i == j:
-                ax.hist(data[:, i], bins=20, color=pal[i % len(pal)], alpha=0.7)
+                ax.hist(col_i, bins=20, color=pal[i % len(pal)], alpha=0.7)
             else:
-                ax.scatter(data[:, j], data[:, i], s=10, color=pal[i % len(pal)], alpha=0.5)
+                ax.scatter(col_j, col_i, s=10, color=pal[i % len(pal)], alpha=0.5)
             if i == n - 1:
                 ax.set_xlabel(labels[j], fontsize=8)
             if j == 0:
@@ -347,22 +374,32 @@ def regplot(x, y, color=None, ci=95, label=None, ax=None, **kwargs):
     _apply_theme(_current_theme)
     ax = ax or _plt.gca()
     color = color or PALETTES[_current_palette][0]
-    x, y = np.array(x, dtype=float), np.array(y, dtype=float)
-    ax.scatter(x, y, color=color, alpha=0.5, s=20)
-    # Fit line
-    p = np.polyfit(x, y, 1)
-    x_sorted = np.linspace(x.min(), x.max(), 100)
-    y_line = np.polyval(p, x_sorted)
+    xl = _to_list(x); yl = _to_list(y); n = len(xl)
+    ax.scatter(xl, yl, color=color, alpha=0.5, s=20)
+    # Simple linear fit: slope = cov(x,y)/var(x), intercept = mean(y) - slope*mean(x)
+    mx = _mean(xl); my = _mean(yl)
+    cov = sum((xl[i]-mx)*(yl[i]-my) for i in range(n))/max(n-1,1)
+    var = sum((xl[i]-mx)**2 for i in range(n))/max(n-1,1)
+    slope = cov/var if var else 0.0; intercept = my - slope*mx
+    xmin = min(xl); xmax = max(xl)
+    x_sorted = [xmin+(xmax-xmin)*i/99 for i in range(100)]
+    y_line = [slope*xv+intercept for xv in x_sorted]
     ax.plot(x_sorted, y_line, color=color, linewidth=2, label=label)
     if ci:
-        # Confidence interval via bootstrap
-        n = len(x)
-        predictions = np.array([np.polyval(np.polyfit(x, y, 1), x_sorted)
-                                  for _ in range(50)])  # 50 bootstrap samples simplified
-        y_std = predictions.std(axis=0)
-        z = 1.96 if ci == 95 else 2.576
-        ax.fill_between(x_sorted, y_line - z * y_std, y_line + z * y_std,
-                        alpha=0.15, color=color)
+        import random as _r
+        preds = []
+        for _ in range(50):
+            idx = [_r.randint(0,n-1) for _ in range(n)]
+            xs2 = [xl[i] for i in idx]; ys2 = [yl[i] for i in idx]
+            mx2 = _mean(xs2); my2 = _mean(ys2)
+            cov2 = sum((xs2[i]-mx2)*(ys2[i]-my2) for i in range(n))/max(n-1,1)
+            var2 = sum((xs2[i]-mx2)**2 for i in range(n))/max(n-1,1)
+            sl2 = cov2/var2 if var2 else 0.0; ic2 = my2-sl2*mx2
+            preds.append([sl2*xv+ic2 for xv in x_sorted])
+        y_std = [_std([preds[s][k] for s in range(len(preds))]) for k in range(100)]
+        z = 1.96 if ci==95 else 2.576
+        ax.fill_between(x_sorted, [y_line[k]-z*y_std[k] for k in range(100)],
+                        [y_line[k]+z*y_std[k] for k in range(100)], alpha=0.15, color=color)
     if label:
         ax.legend(framealpha=0.1, edgecolor='none')
     return ax
@@ -399,9 +436,9 @@ def confusion_matrix_plot(cm, class_names=None, normalize=False, cmap='Blues',
                            title='Confusion Matrix', figsize=(8, 6)):
     _require_mpl()
     _apply_theme(_current_theme)
-    cm = np.array(cm)
+    cm = [list(row) for row in cm]
     if normalize:
-        cm = cm.astype(float) / (cm.sum(axis=1, keepdims=True) + 1e-12)
+        cm = [[v/(sum(row)+1e-12) for v in row] for row in cm]
     fig, ax = _plt.subplots(figsize=figsize)
     heatmap(cm, annot=True, fmt='.2f' if normalize else '.0f', cmap=cmap,
             xticklabels=class_names, yticklabels=class_names, ax=ax)
@@ -418,7 +455,7 @@ def roc_curve_plot(fpr_list, tpr_list, auc_list=None, labels=None,
     _apply_theme(_current_theme)
     pal = PALETTES[_current_palette]
     fig, ax = _plt.subplots(figsize=figsize)
-    if not isinstance(fpr_list[0], (list, np.ndarray)):
+    if not isinstance(fpr_list[0], (list, tuple)):
         fpr_list = [fpr_list]
         tpr_list = [tpr_list]
         auc_list = [auc_list] if auc_list is not None else [None]
@@ -458,14 +495,14 @@ def feature_importance_plot(importances, feature_names=None, top_n=20,
                              title='Feature Importances', figsize=(10, 6)):
     _require_mpl()
     _apply_theme(_current_theme)
-    importances = np.array(importances)
+    importances = _to_list(importances)
     if feature_names is None:
         feature_names = [f'feature_{i}' for i in range(len(importances))]
-    idx = np.argsort(importances)[-top_n:]
+    sorted_idx = _argsort(importances)[-top_n:]
     fig, ax = _plt.subplots(figsize=figsize)
     colors = [PALETTES[_current_palette][i % len(PALETTES[_current_palette])]
-              for i in range(len(idx))]
-    ax.barh(np.array(feature_names)[idx], importances[idx], color=colors, alpha=0.8)
+              for i in range(len(sorted_idx))]
+    ax.barh([feature_names[i] for i in sorted_idx], [importances[i] for i in sorted_idx], color=colors, alpha=0.8)
     ax.set_title(title, fontsize=13)
     ax.set_xlabel('Importance', fontsize=11)
     _plt.tight_layout()
@@ -476,7 +513,9 @@ def residuals_plot(y_true, y_pred, ax=None, **kwargs):
     _require_mpl()
     _apply_theme(_current_theme)
     ax = ax or _plt.gca()
-    residuals = np.array(y_true) - np.array(y_pred)
+    yt = _to_list(y_true); yp = _to_list(y_pred)
+    residuals = [yt[i]-yp[i] for i in range(len(yt))]
+    y_pred = yp
     ax.scatter(y_pred, residuals, color=PALETTES[_current_palette][0], alpha=0.5, s=20)
     ax.axhline(0, color='white', linewidth=1, linestyle='--', alpha=0.5)
     ax.set_xlabel('Predicted', fontsize=11)
@@ -490,14 +529,13 @@ def learning_curve(train_scores, val_scores, train_sizes, figsize=(8, 5)):
     _apply_theme(_current_theme)
     pal = PALETTES[_current_palette]
     fig, ax = _plt.subplots(figsize=figsize)
-    ax.plot(train_sizes, np.mean(train_scores, axis=1) if train_scores[0].ndim else train_scores,
-            color=pal[0], linewidth=2, label='Train')
-    ax.plot(train_sizes, np.mean(val_scores, axis=1) if val_scores[0].ndim else val_scores,
-            color=pal[1], linewidth=2, label='Validation')
-    ax.fill_between(train_sizes,
-                    np.mean(train_scores, axis=1) - np.std(train_scores, axis=1) if hasattr(train_scores[0], '__len__') else train_scores,
-                    np.mean(train_scores, axis=1) + np.std(train_scores, axis=1) if hasattr(train_scores[0], '__len__') else train_scores,
-                    alpha=0.1, color=pal[0])
+    _tr = [_mean(_to_list(s)) if isinstance(s,(list,tuple)) else float(s) for s in train_scores]
+    _va = [_mean(_to_list(s)) if isinstance(s,(list,tuple)) else float(s) for s in val_scores]
+    ax.plot(train_sizes, _tr, color=pal[0], linewidth=2, label='Train')
+    ax.plot(train_sizes, _va, color=pal[1], linewidth=2, label='Validation')
+    _tr_std = [_std(_to_list(s)) if isinstance(s,(list,tuple)) else 0.0 for s in train_scores]
+    ax.fill_between(train_sizes, [_tr[i]-_tr_std[i] for i in range(len(_tr))],
+                    [_tr[i]+_tr_std[i] for i in range(len(_tr))], alpha=0.1, color=pal[0])
     ax.legend(framealpha=0.1, edgecolor='none')
     ax.set_xlabel('Training Set Size', fontsize=11)
     ax.set_ylabel('Score', fontsize=11)

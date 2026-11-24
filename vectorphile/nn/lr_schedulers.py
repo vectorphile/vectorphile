@@ -1,7 +1,6 @@
 """vectorphile.nn.lr_schedulers — Learning rate schedulers (PyTorch-compatible API)."""
 from __future__ import annotations
 import math
-import numpy as np
 from typing import List, Optional, Union
 
 

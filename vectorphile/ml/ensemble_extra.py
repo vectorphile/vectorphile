@@ -1,14 +1,19 @@
-"""Extended ensemble methods — Bagging, AdaBoost, ExtraTrees, Voting, Stacking."""
-from __future__ import annotations
-import numpy as np
-from typing import List, Optional, Union
+"""Extra ensemble methods — pure Python."""
+import math
+import random as _random
+from typing import Optional, List
+
 from vectorphile.ml.tree import DecisionTreeClassifier, DecisionTreeRegressor
+
+
+def _uniq_sorted(seq):
+    return sorted(set(seq))
 
 
 class BaggingClassifier:
     def __init__(self, estimator=None, n_estimators=10, max_samples=1.0,
                  max_features=1.0, bootstrap=True, bootstrap_features=False,
-                 random_state=None, n_jobs=1):
+                 random_state=None, n_jobs=None):
         self.estimator = estimator
         self.n_estimators = n_estimators
         self.max_samples = max_samples
@@ -16,157 +21,292 @@ class BaggingClassifier:
         self.bootstrap = bootstrap
         self.bootstrap_features = bootstrap_features
         self.random_state = random_state
-        self.estimators_ = []
-        self.feature_indices_ = []
-        self.classes_ = None
 
     def _make_estimator(self):
+        if self.estimator is None:
+            return DecisionTreeClassifier()
         import copy
-        return copy.deepcopy(self.estimator) if self.estimator else DecisionTreeClassifier()
+        return copy.deepcopy(self.estimator)
 
     def fit(self, X, y):
-        if self.random_state is not None:
-            np.random.seed(self.random_state)
-        X, y = np.array(X), np.array(y)
-        n, m = X.shape
-        self.classes_ = np.unique(y)
+        X2 = [[float(v) for v in row] for row in X]
+        y2 = list(y)
+        n, p = len(X2), len(X2[0])
+        self.classes_ = _uniq_sorted(y2)
+        rng = _random.Random(self.random_state)
         n_samples = int(n * self.max_samples) if isinstance(self.max_samples, float) else self.max_samples
-        n_features = int(m * self.max_features) if isinstance(self.max_features, float) else self.max_features
-        self.estimators_, self.feature_indices_ = [], []
+        self.estimators_ = []
         for _ in range(self.n_estimators):
-            sample_idx = np.random.choice(n, n_samples, replace=self.bootstrap)
-            feat_idx = np.random.choice(m, n_features, replace=self.bootstrap_features)
+            if self.bootstrap:
+                idxs = [rng.randint(0, n - 1) for _ in range(n_samples)]
+            else:
+                idxs = rng.sample(range(n), min(n_samples, n))
+            Xb = [X2[i] for i in idxs]
+            yb = [y2[i] for i in idxs]
             est = self._make_estimator()
-            est.fit(X[sample_idx][:, feat_idx], y[sample_idx])
+            est.fit(Xb, yb)
             self.estimators_.append(est)
-            self.feature_indices_.append(feat_idx)
         return self
 
     def predict_proba(self, X):
-        X = np.array(X)
-        proba = np.zeros((len(X), len(self.classes_)))
-        for est, feat_idx in zip(self.estimators_, self.feature_indices_):
+        K = len(self.classes_)
+        avg = [[0.0] * K for _ in range(len(X))]
+        count = 0
+        for est in self.estimators_:
             if hasattr(est, 'predict_proba'):
-                p = est.predict_proba(X[:, feat_idx])
+                proba = est.predict_proba(X)
+                for i, row in enumerate(proba):
+                    # align to self.classes_
+                    est_classes = getattr(est, 'classes_', self.classes_)
+                    for ci, c in enumerate(est_classes):
+                        if c in self.classes_:
+                            k = self.classes_.index(c)
+                            avg[i][k] += row[ci]
             else:
-                pred = est.predict(X[:, feat_idx])
-                p = np.zeros((len(X), len(self.classes_)))
-                for i, cls in enumerate(self.classes_):
-                    p[:, i] = (pred == cls).astype(float)
-            proba += p
-        return proba / self.n_estimators
+                preds = est.predict(X)
+                for i, pred in enumerate(preds):
+                    if pred in self.classes_:
+                        k = self.classes_.index(pred)
+                        avg[i][k] += 1.0
+            count += 1
+        T = max(count, 1)
+        return [[v / T for v in row] for row in avg]
 
     def predict(self, X):
         proba = self.predict_proba(X)
-        return self.classes_[np.argmax(proba, axis=1)]
+        return [self.classes_[row.index(max(row))] for row in proba]
 
     def score(self, X, y):
-        return float(np.mean(self.predict(X) == np.array(y)))
+        preds = self.predict(X)
+        return sum(a == b for a, b in zip(preds, y)) / len(y)
 
 
 class BaggingRegressor:
     def __init__(self, estimator=None, n_estimators=10, max_samples=1.0,
-                 max_features=1.0, bootstrap=True, random_state=None):
+                 bootstrap=True, random_state=None, n_jobs=None):
         self.estimator = estimator
         self.n_estimators = n_estimators
         self.max_samples = max_samples
-        self.max_features = max_features
         self.bootstrap = bootstrap
         self.random_state = random_state
-        self.estimators_ = []
-        self.feature_indices_ = []
 
     def _make_estimator(self):
+        if self.estimator is None:
+            return DecisionTreeRegressor()
         import copy
-        return copy.deepcopy(self.estimator) if self.estimator else DecisionTreeRegressor()
+        return copy.deepcopy(self.estimator)
 
     def fit(self, X, y):
-        if self.random_state is not None:
-            np.random.seed(self.random_state)
-        X, y = np.array(X), np.array(y, dtype=np.float64)
-        n, m = X.shape
+        X2 = [[float(v) for v in row] for row in X]
+        y2 = [float(v) for v in y]
+        n = len(X2)
+        rng = _random.Random(self.random_state)
         n_samples = int(n * self.max_samples) if isinstance(self.max_samples, float) else self.max_samples
-        n_features = int(m * self.max_features) if isinstance(self.max_features, float) else self.max_features
-        self.estimators_, self.feature_indices_ = [], []
+        self.estimators_ = []
         for _ in range(self.n_estimators):
-            sample_idx = np.random.choice(n, n_samples, replace=self.bootstrap)
-            feat_idx = np.random.choice(m, n_features, replace=False)
+            if self.bootstrap:
+                idxs = [rng.randint(0, n - 1) for _ in range(n_samples)]
+            else:
+                idxs = rng.sample(range(n), min(n_samples, n))
+            Xb = [X2[i] for i in idxs]
+            yb = [y2[i] for i in idxs]
             est = self._make_estimator()
-            est.fit(X[sample_idx][:, feat_idx], y[sample_idx])
+            est.fit(Xb, yb)
             self.estimators_.append(est)
-            self.feature_indices_.append(feat_idx)
         return self
 
     def predict(self, X):
-        X = np.array(X)
-        return np.mean([est.predict(X[:, fi]) for est, fi in zip(self.estimators_, self.feature_indices_)], axis=0).astype(np.float32)
+        all_preds = [est.predict(X) for est in self.estimators_]
+        n = len(X)
+        return [sum(all_preds[t][i] for t in range(len(self.estimators_))) / len(self.estimators_)
+                for i in range(n)]
 
     def score(self, X, y):
-        y = np.array(y, dtype=np.float64)
-        preds = self.predict(X).astype(np.float64)
-        ss_res = np.sum((y - preds)**2)
-        ss_tot = np.sum((y - y.mean())**2)
+        preds = self.predict(X)
+        y2 = [float(v) for v in y]
+        mu = sum(y2) / len(y2)
+        ss_res = sum((a - b) ** 2 for a, b in zip(y2, preds))
+        ss_tot = sum((v - mu) ** 2 for v in y2)
         return float(1 - ss_res / (ss_tot + 1e-12))
 
 
 class AdaBoostClassifier:
-    def __init__(self, estimator=None, n_estimators=50, learning_rate=1.0,
-                 algorithm='SAMME', random_state=None):
+    def __init__(self, estimator=None, n_estimators=50, learning_rate=1.0, random_state=None):
         self.estimator = estimator
         self.n_estimators = n_estimators
         self.learning_rate = learning_rate
-        self.algorithm = algorithm
         self.random_state = random_state
-        self.estimators_ = []
-        self.estimator_weights_ = []
-        self.estimator_errors_ = []
-        self.classes_ = None
 
     def _make_estimator(self):
+        if self.estimator is None:
+            return DecisionTreeClassifier(max_depth=1)
         import copy
-        return copy.deepcopy(self.estimator) if self.estimator else DecisionTreeClassifier(max_depth=1)
+        return copy.deepcopy(self.estimator)
 
     def fit(self, X, y):
-        if self.random_state is not None:
-            np.random.seed(self.random_state)
-        X, y = np.array(X), np.array(y)
-        n = len(y)
-        self.classes_ = np.unique(y)
-        K = len(self.classes_)
-        weights = np.full(n, 1.0 / n)
-        self.estimators_, self.estimator_weights_, self.estimator_errors_ = [], [], []
-        for t in range(self.n_estimators):
-            idx = np.random.choice(n, n, replace=True, p=weights)
+        X2 = [[float(v) for v in row] for row in X]
+        y2 = list(y)
+        n = len(X2)
+        self.classes_ = _uniq_sorted(y2)
+        rng = _random.Random(self.random_state)
+        weights = [1.0 / n] * n
+        self.estimators_ = []
+        self.estimator_weights_ = []
+        for _ in range(self.n_estimators):
+            # Weighted sample
+            cumulative = []
+            cum = 0.0
+            for w in weights:
+                cum += w
+                cumulative.append(cum)
+            idxs = []
+            for _ in range(n):
+                r = rng.random()
+                for idx, c in enumerate(cumulative):
+                    if r <= c:
+                        idxs.append(idx)
+                        break
+                else:
+                    idxs.append(n - 1)
+            Xb = [X2[i] for i in idxs]
+            yb = [y2[i] for i in idxs]
             est = self._make_estimator()
-            est.fit(X[idx], y[idx])
-            pred = est.predict(X)
-            err = np.sum(weights * (pred != y))
-            if err <= 0:
-                self.estimators_.append(est)
-                self.estimator_weights_.append(1.0)
-                self.estimator_errors_.append(0.0)
+            est.fit(Xb, yb)
+            preds = est.predict(X2)
+            # Compute weighted error
+            err = sum(weights[i] for i in range(n) if preds[i] != y2[i])
+            err = max(err, 1e-10)
+            if err >= 0.5:
                 break
-            if err >= 1 - 1/K:
-                break
-            alpha = self.learning_rate * (np.log((1 - err) / (err + 1e-12)) + np.log(K - 1))
-            weights = weights * np.exp(alpha * (pred != y).astype(float))
-            weights /= weights.sum()
+            alpha = self.learning_rate * 0.5 * math.log((1 - err) / err)
+            # Update weights
+            for i in range(n):
+                if preds[i] == y2[i]:
+                    weights[i] *= math.exp(-alpha)
+                else:
+                    weights[i] *= math.exp(alpha)
+            total_w = sum(weights)
+            weights = [w / total_w for w in weights]
             self.estimators_.append(est)
             self.estimator_weights_.append(alpha)
-            self.estimator_errors_.append(err)
         return self
 
     def predict(self, X):
-        X = np.array(X)
-        class_scores = np.zeros((len(X), len(self.classes_)))
+        K = len(self.classes_)
+        scores = [[0.0] * K for _ in range(len(X))]
         for est, alpha in zip(self.estimators_, self.estimator_weights_):
-            pred = est.predict(X)
-            for i, cls in enumerate(self.classes_):
-                class_scores[:, i] += alpha * (pred == cls).astype(float)
-        return self.classes_[np.argmax(class_scores, axis=1)]
+            preds = est.predict(X)
+            for i, pred in enumerate(preds):
+                if pred in self.classes_:
+                    k = self.classes_.index(pred)
+                    scores[i][k] += alpha
+        return [self.classes_[row.index(max(row))] for row in scores]
 
     def score(self, X, y):
-        return float(np.mean(self.predict(X) == np.array(y)))
+        preds = self.predict(X)
+        return sum(a == b for a, b in zip(preds, y)) / len(y)
+
+
+class VotingClassifier:
+    def __init__(self, estimators, voting='hard', weights=None):
+        self.estimators = estimators
+        self.voting = voting
+        self.weights = weights
+
+    def fit(self, X, y):
+        self.classes_ = _uniq_sorted(y)
+        self.estimators_ = []
+        for name, est in self.estimators:
+            import copy
+            cloned = copy.deepcopy(est)
+            cloned.fit(X, y)
+            self.estimators_.append(cloned)
+        return self
+
+    def predict(self, X):
+        K = len(self.classes_)
+        weights = self.weights or [1.0] * len(self.estimators_)
+        if self.voting == 'soft':
+            avg = [[0.0] * K for _ in range(len(X))]
+            for est, w in zip(self.estimators_, weights):
+                proba = est.predict_proba(X)
+                for i, row in enumerate(proba):
+                    for k in range(K):
+                        avg[i][k] += w * row[k]
+            return [self.classes_[row.index(max(row))] for row in avg]
+        # hard voting
+        result = []
+        all_preds = [est.predict(X) for est in self.estimators_]
+        for i in range(len(X)):
+            votes = {}
+            for t, preds in enumerate(all_preds):
+                c = preds[i]
+                votes[c] = votes.get(c, 0) + weights[t]
+            result.append(max(votes, key=votes.get))
+        return result
+
+    def score(self, X, y):
+        preds = self.predict(X)
+        return sum(a == b for a, b in zip(preds, y)) / len(y)
+
+
+class StackingClassifier:
+    def __init__(self, estimators, final_estimator=None, cv=5, passthrough=False):
+        self.estimators = estimators
+        self.final_estimator = final_estimator
+        self.cv = cv
+        self.passthrough = passthrough
+
+    def fit(self, X, y):
+        from vectorphile.ml.model_selection import KFold
+        import copy
+        X2 = [[float(v) for v in row] for row in X]
+        y2 = list(y)
+        self.classes_ = _uniq_sorted(y2)
+        n = len(X2)
+        T = len(self.estimators)
+        meta_X = [[0.0] * T for _ in range(n)]
+        kf = KFold(n_splits=self.cv, shuffle=True, random_state=42)
+        # Train base estimators with cross-val predictions for meta-features
+        self.estimators_ = []
+        for t, (name, est) in enumerate(self.estimators):
+            cloned = copy.deepcopy(est)
+            for train_idx, test_idx in kf.split(X2):
+                Xtr = [X2[i] for i in train_idx]
+                ytr = [y2[i] for i in train_idx]
+                Xte = [X2[i] for i in test_idx]
+                e = copy.deepcopy(est)
+                e.fit(Xtr, ytr)
+                preds = e.predict(Xte)
+                for i, idx in enumerate(test_idx):
+                    meta_X[idx][t] = float(preds[i]) if isinstance(preds[i], (int, float)) else self.classes_.index(preds[i])
+            cloned.fit(X2, y2)
+            self.estimators_.append(cloned)
+        if self.passthrough:
+            meta_X = [X2[i] + meta_X[i] for i in range(n)]
+        if self.final_estimator is None:
+            from vectorphile.ml.linear import LogisticRegression
+            self.final_estimator_ = LogisticRegression()
+        else:
+            self.final_estimator_ = copy.deepcopy(self.final_estimator)
+        self.final_estimator_.fit(meta_X, y2)
+        return self
+
+    def predict(self, X):
+        X2 = [[float(v) for v in row] for row in X]
+        T = len(self.estimators_)
+        meta_X = [[0.0] * T for _ in range(len(X2))]
+        for t, est in enumerate(self.estimators_):
+            preds = est.predict(X2)
+            for i, pred in enumerate(preds):
+                meta_X[i][t] = float(pred) if isinstance(pred, (int, float)) else self.classes_.index(pred)
+        if self.passthrough:
+            meta_X = [X2[i] + meta_X[i] for i in range(len(X2))]
+        return self.final_estimator_.predict(meta_X)
+
+    def score(self, X, y):
+        preds = self.predict(X)
+        return sum(a == b for a, b in zip(preds, y)) / len(y)
 
 
 class AdaBoostRegressor:
@@ -177,121 +317,103 @@ class AdaBoostRegressor:
         self.learning_rate = learning_rate
         self.loss = loss
         self.random_state = random_state
-        self.estimators_ = []
-        self.estimator_weights_ = []
 
     def _make_estimator(self):
+        if self.estimator is None:
+            return DecisionTreeRegressor(max_depth=3)
         import copy
-        return copy.deepcopy(self.estimator) if self.estimator else DecisionTreeRegressor(max_depth=3)
+        return copy.deepcopy(self.estimator)
 
     def fit(self, X, y):
-        if self.random_state is not None:
-            np.random.seed(self.random_state)
-        X, y = np.array(X), np.array(y, dtype=np.float64)
-        n = len(y)
-        weights = np.full(n, 1.0 / n)
-        self.estimators_, self.estimator_weights_ = [], []
-        for t in range(self.n_estimators):
-            idx = np.random.choice(n, n, replace=True, p=weights)
+        X2 = [[float(v) for v in row] for row in X]
+        y2 = [float(v) for v in y]
+        n = len(X2)
+        rng = _random.Random(self.random_state)
+        weights = [1.0 / n] * n
+        self.estimators_ = []
+        self.estimator_weights_ = []
+        for _ in range(self.n_estimators):
+            cumulative, cum = [], 0.0
+            for w in weights:
+                cum += w
+                cumulative.append(cum)
+            idxs = []
+            for _ in range(n):
+                r = rng.random()
+                for idx, c in enumerate(cumulative):
+                    if r <= c:
+                        idxs.append(idx)
+                        break
+                else:
+                    idxs.append(n - 1)
             est = self._make_estimator()
-            est.fit(X[idx], y[idx])
-            pred = est.predict(X)
-            err_arr = np.abs(pred - y)
-            max_err = err_arr.max()
-            if max_err == 0:
-                self.estimators_.append(est)
-                self.estimator_weights_.append(1.0)
+            est.fit([X2[i] for i in idxs], [y2[i] for i in idxs])
+            preds = est.predict(X2)
+            errors = [abs(preds[i] - y2[i]) for i in range(n)]
+            max_err = max(errors) + 1e-10
+            norm_errors = [e / max_err for e in errors]
+            loss_val = min(sum(weights[i] * norm_errors[i] for i in range(n)), 1.0 - 1e-10)
+            if loss_val >= 0.5:
                 break
-            if self.loss == 'linear':
-                loss_arr = err_arr / max_err
-            elif self.loss == 'square':
-                loss_arr = (err_arr / max_err) ** 2
-            else:
-                loss_arr = 1 - np.exp(-err_arr / max_err)
-            err = (weights * loss_arr).sum()
-            if err >= 0.5:
-                break
-            beta = err / (1 - err + 1e-12)
-            alpha = self.learning_rate * np.log(1.0 / (beta + 1e-12))
-            weights = weights * np.power(beta, (1 - loss_arr))
-            weights /= weights.sum()
+            beta = loss_val / (1.0 - loss_val + 1e-10)
+            alpha = self.learning_rate * math.log(1.0 / (beta + 1e-10))
+            weights = [weights[i] * beta ** (1.0 - norm_errors[i]) for i in range(n)]
+            total_w = sum(weights)
+            weights = [w / total_w for w in weights]
             self.estimators_.append(est)
             self.estimator_weights_.append(alpha)
         return self
 
     def predict(self, X):
-        X = np.array(X)
         if not self.estimators_:
-            return np.zeros(len(X))
-        preds = np.array([est.predict(X) for est in self.estimators_])
-        weights = np.array(self.estimator_weights_)
-        weights = weights / (weights.sum() + 1e-12)
-        return (preds * weights[:, None]).sum(axis=0).astype(np.float32)
+            return [0.0] * len(X)
+        preds_all = [est.predict(X) for est in self.estimators_]
+        total_w = sum(self.estimator_weights_)
+        return [sum(self.estimator_weights_[t] * preds_all[t][i]
+                    for t in range(len(self.estimators_))) / max(total_w, 1e-10)
+                for i in range(len(X))]
 
     def score(self, X, y):
-        y = np.array(y, dtype=np.float64)
-        preds = self.predict(X).astype(np.float64)
-        ss_res = np.sum((y - preds)**2)
-        ss_tot = np.sum((y - y.mean())**2)
+        preds = self.predict(X)
+        y2 = [float(v) for v in y]
+        mu = sum(y2) / len(y2)
+        ss_res = sum((a - b) ** 2 for a, b in zip(y2, preds))
+        ss_tot = sum((v - mu) ** 2 for v in y2)
         return float(1 - ss_res / (ss_tot + 1e-12))
 
 
 class ExtraTreesClassifier:
-    """Extremely Randomized Trees — random thresholds reduce variance."""
     def __init__(self, n_estimators=100, max_depth=None, min_samples_split=2,
-                 max_features='sqrt', random_state=None, n_jobs=1):
+                 max_features='sqrt', random_state=None):
         self.n_estimators = n_estimators
         self.max_depth = max_depth
         self.min_samples_split = min_samples_split
         self.max_features = max_features
         self.random_state = random_state
-        self.estimators_ = []
-        self.classes_ = None
 
     def fit(self, X, y):
-        from vectorphile.ml.tree import _TreeNode, _build_extra_tree
-        if self.random_state is not None:
-            np.random.seed(self.random_state)
-        X, y = np.array(X), np.array(y)
-        self.classes_ = np.unique(y)
+        X2 = [[float(v) for v in row] for row in X]
+        y2 = list(y)
+        self.classes_ = _uniq_sorted(y2)
+        n = len(X2)
+        rng = _random.Random(self.random_state)
         self.estimators_ = []
         for _ in range(self.n_estimators):
-            tree = DecisionTreeClassifier(max_depth=self.max_depth,
-                                          min_samples_split=self.min_samples_split,
-                                          max_features=self.max_features,
-                                          splitter='random')
-            idx = np.random.choice(len(y), len(y), replace=True)
-            tree.fit(X[idx], y[idx])
-            self.estimators_.append(tree)
+            idxs = [rng.randint(0, n - 1) for _ in range(n)]
+            est = DecisionTreeClassifier(max_depth=self.max_depth, min_samples_split=self.min_samples_split)
+            est.fit([X2[i] for i in idxs], [y2[i] for i in idxs])
+            self.estimators_.append(est)
         return self
 
-    def predict_proba(self, X):
-        X = np.array(X)
-        proba = np.zeros((len(X), len(self.classes_)))
-        for est in self.estimators_:
-            if hasattr(est, 'predict_proba'):
-                proba += est.predict_proba(X)
-            else:
-                pred = est.predict(X)
-                for i, cls in enumerate(self.classes_):
-                    proba[:, i] += (pred == cls).astype(float)
-        return proba / self.n_estimators
-
     def predict(self, X):
-        return self.classes_[np.argmax(self.predict_proba(X), axis=1)]
+        from collections import Counter
+        votes = [est.predict(X) for est in self.estimators_]
+        return [Counter(votes[t][i] for t in range(len(self.estimators_))).most_common(1)[0][0]
+                for i in range(len(X))]
 
     def score(self, X, y):
-        return float(np.mean(self.predict(X) == np.array(y)))
-
-    @property
-    def feature_importances_(self):
-        if not self.estimators_:
-            return None
-        importances = [getattr(est, 'feature_importances_', None) for est in self.estimators_]
-        importances = [imp for imp in importances if imp is not None]
-        if not importances:
-            return None
-        return np.mean(importances, axis=0)
+        preds = self.predict(X)
+        return sum(a == b for a, b in zip(preds, y)) / len(y)
 
 
 class ExtraTreesRegressor:
@@ -302,236 +424,119 @@ class ExtraTreesRegressor:
         self.min_samples_split = min_samples_split
         self.max_features = max_features
         self.random_state = random_state
-        self.estimators_ = []
 
     def fit(self, X, y):
-        if self.random_state is not None:
-            np.random.seed(self.random_state)
-        X, y = np.array(X), np.array(y, dtype=np.float64)
+        X2 = [[float(v) for v in row] for row in X]
+        y2 = [float(v) for v in y]
+        n = len(X2)
+        rng = _random.Random(self.random_state)
         self.estimators_ = []
         for _ in range(self.n_estimators):
-            tree = DecisionTreeRegressor(max_depth=self.max_depth,
-                                         min_samples_split=self.min_samples_split,
-                                         max_features=self.max_features,
-                                         splitter='random')
-            idx = np.random.choice(len(y), len(y), replace=True)
-            tree.fit(X[idx], y[idx])
-            self.estimators_.append(tree)
+            idxs = [rng.randint(0, n - 1) for _ in range(n)]
+            est = DecisionTreeRegressor(max_depth=self.max_depth, min_samples_split=self.min_samples_split)
+            est.fit([X2[i] for i in idxs], [y2[i] for i in idxs])
+            self.estimators_.append(est)
         return self
 
     def predict(self, X):
-        X = np.array(X)
-        return np.mean([est.predict(X) for est in self.estimators_], axis=0).astype(np.float32)
+        preds_all = [est.predict(X) for est in self.estimators_]
+        return [sum(preds_all[t][i] for t in range(len(self.estimators_))) / len(self.estimators_)
+                for i in range(len(X))]
 
     def score(self, X, y):
-        y = np.array(y, dtype=np.float64)
-        preds = self.predict(X).astype(np.float64)
-        ss_res = np.sum((y - preds)**2)
-        ss_tot = np.sum((y - y.mean())**2)
+        preds = self.predict(X)
+        y2 = [float(v) for v in y]
+        mu = sum(y2) / len(y2)
+        ss_res = sum((a - b) ** 2 for a, b in zip(y2, preds))
+        ss_tot = sum((v - mu) ** 2 for v in y2)
         return float(1 - ss_res / (ss_tot + 1e-12))
-
-
-class VotingClassifier:
-    def __init__(self, estimators: List, voting='hard', weights=None, flatten_transform=True):
-        self.estimators = estimators  # list of (name, estimator)
-        self.voting = voting
-        self.weights = weights
-        self.flatten_transform = flatten_transform
-        self.classes_ = None
-        self.estimators_ = []
-
-    def fit(self, X, y):
-        X, y = np.array(X), np.array(y)
-        self.classes_ = np.unique(y)
-        self.estimators_ = []
-        for name, est in self.estimators:
-            import copy
-            cloned = copy.deepcopy(est)
-            cloned.fit(X, y)
-            self.estimators_.append(cloned)
-        return self
-
-    def predict(self, X):
-        X = np.array(X)
-        if self.voting == 'soft':
-            avg = np.zeros((len(X), len(self.classes_)))
-            for i, est in enumerate(self.estimators_):
-                w = self.weights[i] if self.weights else 1.0
-                p = est.predict_proba(X) if hasattr(est, 'predict_proba') else \
-                    np.eye(len(self.classes_))[(np.searchsorted(self.classes_, est.predict(X)))]
-                avg += w * p
-            return self.classes_[np.argmax(avg, axis=1)]
-        else:
-            preds = np.array([est.predict(X) for est in self.estimators_])
-            result = np.apply_along_axis(
-                lambda col: np.bincount([np.searchsorted(self.classes_, v) for v in col]).argmax(),
-                axis=0, arr=preds
-            )
-            return self.classes_[result]
-
-    def predict_proba(self, X):
-        X = np.array(X)
-        avg = np.zeros((len(X), len(self.classes_)))
-        for i, est in enumerate(self.estimators_):
-            w = self.weights[i] if self.weights else 1.0
-            p = est.predict_proba(X) if hasattr(est, 'predict_proba') else \
-                np.eye(len(self.classes_))[(np.searchsorted(self.classes_, est.predict(X)))]
-            avg += w * p
-        total_w = sum(self.weights) if self.weights else len(self.estimators_)
-        return avg / total_w
-
-    def score(self, X, y):
-        return float(np.mean(self.predict(X) == np.array(y)))
 
 
 class VotingRegressor:
-    def __init__(self, estimators: List, weights=None):
+    def __init__(self, estimators, weights=None):
         self.estimators = estimators
         self.weights = weights
-        self.estimators_ = []
 
     def fit(self, X, y):
         import copy
-        X, y = np.array(X), np.array(y, dtype=np.float64)
-        self.estimators_ = []
-        for _, est in self.estimators:
-            cloned = copy.deepcopy(est)
-            cloned.fit(X, y)
-            self.estimators_.append(cloned)
+        X2 = [[float(v) for v in row] for row in X]
+        y2 = [float(v) for v in y]
+        self.estimators_ = [copy.deepcopy(est).fit(X2, y2) for _, est in self.estimators]
         return self
 
     def predict(self, X):
-        X = np.array(X)
-        preds = np.array([est.predict(X) for est in self.estimators_], dtype=np.float64)
-        if self.weights:
-            w = np.array(self.weights)
-            return (preds * w[:, None]).sum(axis=0) / w.sum()
-        return preds.mean(axis=0).astype(np.float32)
+        X2 = [[float(v) for v in row] for row in X]
+        weights = self.weights or [1.0] * len(self.estimators_)
+        total_w = sum(weights)
+        preds_all = [est.predict(X2) for est in self.estimators_]
+        return [sum(weights[t] * preds_all[t][i] for t in range(len(self.estimators_))) / total_w
+                for i in range(len(X2))]
 
     def score(self, X, y):
-        y = np.array(y, dtype=np.float64)
-        preds = self.predict(X).astype(np.float64)
-        ss_res = np.sum((y - preds)**2)
-        ss_tot = np.sum((y - y.mean())**2)
+        preds = self.predict(X)
+        y2 = [float(v) for v in y]
+        mu = sum(y2) / len(y2)
+        ss_res = sum((a - b) ** 2 for a, b in zip(y2, preds))
+        ss_tot = sum((v - mu) ** 2 for v in y2)
         return float(1 - ss_res / (ss_tot + 1e-12))
 
 
-class StackingClassifier:
-    def __init__(self, estimators: List, final_estimator=None, cv=5,
-                 passthrough=False, stack_method='auto'):
-        self.estimators = estimators
-        self.final_estimator = final_estimator
-        self.cv = cv
-        self.passthrough = passthrough
-        self.stack_method = stack_method
-        self.estimators_ = []
-        self.final_estimator_ = None
-        self.classes_ = None
-
-    def fit(self, X, y):
-        import copy
-        from vectorphile.ml.linear import LogisticRegression
-        X, y = np.array(X), np.array(y)
-        n = len(y)
-        self.classes_ = np.unique(y)
-        K = len(self.classes_)
-        # First-level predictions via cross-validation
-        meta_X = np.zeros((n, len(self.estimators) * K))
-        self.estimators_ = []
-        for j, (name, est) in enumerate(self.estimators):
-            cloned_full = copy.deepcopy(est)
-            cloned_full.fit(X, y)
-            self.estimators_.append(cloned_full)
-            # OOF predictions
-            fold_size = n // self.cv
-            for fold in range(self.cv):
-                val_start = fold * fold_size
-                val_end = val_start + fold_size if fold < self.cv - 1 else n
-                train_idx = np.concatenate([np.arange(val_start), np.arange(val_end, n)])
-                val_idx = np.arange(val_start, val_end)
-                cloned_fold = copy.deepcopy(est)
-                cloned_fold.fit(X[train_idx], y[train_idx])
-                if hasattr(cloned_fold, 'predict_proba'):
-                    p = cloned_fold.predict_proba(X[val_idx])
-                else:
-                    pred = cloned_fold.predict(X[val_idx])
-                    p = np.eye(K)[(np.searchsorted(self.classes_, pred))]
-                meta_X[val_idx, j*K:(j+1)*K] = p
-        if self.passthrough:
-            meta_X = np.hstack([meta_X, X])
-        self.final_estimator_ = copy.deepcopy(self.final_estimator) if self.final_estimator else LogisticRegression()
-        self.final_estimator_.fit(meta_X, y)
-        return self
-
-    def _make_meta_features(self, X):
-        K = len(self.classes_)
-        meta = np.zeros((len(X), len(self.estimators_) * K))
-        for j, est in enumerate(self.estimators_):
-            if hasattr(est, 'predict_proba'):
-                p = est.predict_proba(X)
-            else:
-                pred = est.predict(X)
-                p = np.eye(K)[(np.searchsorted(self.classes_, pred))]
-            meta[:, j*K:(j+1)*K] = p
-        if self.passthrough:
-            meta = np.hstack([meta, X])
-        return meta
-
-    def predict(self, X):
-        return self.final_estimator_.predict(self._make_meta_features(np.array(X)))
-
-    def predict_proba(self, X):
-        return self.final_estimator_.predict_proba(self._make_meta_features(np.array(X)))
-
-    def score(self, X, y):
-        return float(np.mean(self.predict(X) == np.array(y)))
-
-
 class StackingRegressor:
-    def __init__(self, estimators: List, final_estimator=None, cv=5, passthrough=False):
+    def __init__(self, estimators, final_estimator=None, cv=5, passthrough=False):
         self.estimators = estimators
         self.final_estimator = final_estimator
         self.cv = cv
         self.passthrough = passthrough
-        self.estimators_ = []
-        self.final_estimator_ = None
 
     def fit(self, X, y):
+        from vectorphile.ml.model_selection import KFold
         import copy
-        from vectorphile.ml.linear import LinearRegression
-        X, y = np.array(X), np.array(y, dtype=np.float64)
-        n = len(y)
-        meta_X = np.zeros((n, len(self.estimators)))
+        X2 = [[float(v) for v in row] for row in X]
+        y2 = [float(v) for v in y]
+        n = len(X2)
+        T = len(self.estimators)
+        meta_X = [[0.0] * T for _ in range(n)]
+        kf = KFold(n_splits=self.cv, shuffle=True, random_state=42)
         self.estimators_ = []
-        for j, (name, est) in enumerate(self.estimators):
-            cloned_full = copy.deepcopy(est)
-            cloned_full.fit(X, y)
-            self.estimators_.append(cloned_full)
-            fold_size = n // self.cv
-            for fold in range(self.cv):
-                val_start = fold * fold_size
-                val_end = val_start + fold_size if fold < self.cv - 1 else n
-                train_idx = np.concatenate([np.arange(val_start), np.arange(val_end, n)])
-                val_idx = np.arange(val_start, val_end)
-                cloned_fold = copy.deepcopy(est)
-                cloned_fold.fit(X[train_idx], y[train_idx])
-                meta_X[val_idx, j] = cloned_fold.predict(X[val_idx])
+        for t, (name, est) in enumerate(self.estimators):
+            cloned = copy.deepcopy(est)
+            for train_idx, test_idx in kf.split(X2):
+                Xtr = [X2[i] for i in train_idx]
+                ytr = [y2[i] for i in train_idx]
+                Xte = [X2[i] for i in test_idx]
+                e = copy.deepcopy(est)
+                e.fit(Xtr, ytr)
+                preds = e.predict(Xte)
+                for i, idx in enumerate(test_idx):
+                    meta_X[idx][t] = float(preds[i])
+            cloned.fit(X2, y2)
+            self.estimators_.append(cloned)
         if self.passthrough:
-            meta_X = np.hstack([meta_X, X])
-        self.final_estimator_ = copy.deepcopy(self.final_estimator) if self.final_estimator else LinearRegression()
-        self.final_estimator_.fit(meta_X, y)
+            meta_X = [X2[i] + meta_X[i] for i in range(n)]
+        if self.final_estimator is None:
+            from vectorphile.ml.linear import LinearRegression
+            self.final_estimator_ = LinearRegression()
+        else:
+            self.final_estimator_ = copy.deepcopy(self.final_estimator)
+        self.final_estimator_.fit(meta_X, y2)
         return self
 
     def predict(self, X):
-        X = np.array(X)
-        meta = np.column_stack([est.predict(X) for est in self.estimators_])
+        X2 = [[float(v) for v in row] for row in X]
+        T = len(self.estimators_)
+        meta_X = [[0.0] * T for _ in range(len(X2))]
+        for t, est in enumerate(self.estimators_):
+            preds = est.predict(X2)
+            for i, pred in enumerate(preds):
+                meta_X[i][t] = float(pred)
         if self.passthrough:
-            meta = np.hstack([meta, X])
-        return self.final_estimator_.predict(meta)
+            meta_X = [X2[i] + meta_X[i] for i in range(len(X2))]
+        return self.final_estimator_.predict(meta_X)
 
     def score(self, X, y):
-        y = np.array(y, dtype=np.float64)
-        preds = self.predict(X).astype(np.float64)
-        ss_res = np.sum((y - preds)**2)
-        ss_tot = np.sum((y - y.mean())**2)
+        preds = self.predict(X)
+        y2 = [float(v) for v in y]
+        mu = sum(y2) / len(y2)
+        ss_res = sum((a - b) ** 2 for a, b in zip(y2, preds))
+        ss_tot = sum((v - mu) ** 2 for v in y2)
         return float(1 - ss_res / (ss_tot + 1e-12))

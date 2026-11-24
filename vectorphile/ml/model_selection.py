@@ -1,24 +1,35 @@
-"""Model selection and validation utilities."""
-import numpy as np
-from typing import Any, Callable, Dict, List, Optional, Tuple, Union
+"""Model selection utilities — pure Python."""
+import math
+import random as _random
+from typing import List, Optional, Iterator, Tuple
 
 
 def train_test_split(*arrays, test_size=0.2, random_state=None, shuffle=True, stratify=None):
     if random_state is not None:
-        np.random.seed(random_state)
+        _random.seed(random_state)
     n = len(arrays[0])
-    n_test = int(n * test_size)
+    indices = list(range(n))
     if shuffle:
-        idx = np.random.permutation(n)
+        _random.shuffle(indices)
+    if stratify is not None:
+        # stratified split
+        strat = list(stratify)
+        classes = sorted(set(strat))
+        train_idx, test_idx = [], []
+        for c in classes:
+            c_idx = [i for i in indices if strat[i] == c]
+            n_test = max(1, round(len(c_idx) * test_size))
+            test_idx.extend(c_idx[:n_test])
+            train_idx.extend(c_idx[n_test:])
     else:
-        idx = np.arange(n)
-    test_idx = idx[:n_test]
-    train_idx = idx[n_test:]
+        n_test = max(1, round(n * test_size))
+        test_idx = indices[:n_test]
+        train_idx = indices[n_test:]
     result = []
     for arr in arrays:
-        arr = np.array(arr)
-        result.append(arr[train_idx])
-        result.append(arr[test_idx])
+        lst = list(arr)
+        result.append([lst[i] for i in train_idx])
+        result.append([lst[i] for i in test_idx])
     return result
 
 
@@ -29,25 +40,20 @@ class KFold:
         self.random_state = random_state
 
     def split(self, X, y=None):
-        X = np.array(X)
         n = len(X)
-        idx = np.arange(n)
+        indices = list(range(n))
         if self.shuffle:
-            if self.random_state is not None:
-                np.random.seed(self.random_state)
-            np.random.shuffle(idx)
-        fold_sizes = np.full(self.n_splits, n // self.n_splits, dtype=int)
-        fold_sizes[:n % self.n_splits] += 1
+            rng = _random.Random(self.random_state)
+            rng.shuffle(indices)
+        fold_sizes = [n // self.n_splits + (1 if i < n % self.n_splits else 0)
+                      for i in range(self.n_splits)]
         current = 0
         for fold_size in fold_sizes:
             start, stop = current, current + fold_size
-            test_idx = idx[start:stop]
-            train_idx = np.concatenate([idx[:start], idx[stop:]])
+            test_idx = indices[start:stop]
+            train_idx = indices[:start] + indices[stop:]
             yield train_idx, test_idx
             current = stop
-
-    def get_n_splits(self):
-        return self.n_splits
 
 
 class StratifiedKFold:
@@ -57,115 +63,144 @@ class StratifiedKFold:
         self.random_state = random_state
 
     def split(self, X, y):
-        X, y = np.array(X), np.array(y)
-        classes, y_indices = np.unique(y, return_inverse=True)
-        rng = np.random.RandomState(self.random_state) if self.random_state else np.random.RandomState()
-        folds = [[] for _ in range(self.n_splits)]
-        for cls_idx in range(len(classes)):
-            class_indices = np.where(y_indices == cls_idx)[0]
-            if self.shuffle:
-                rng.shuffle(class_indices)
-            for i, idx in enumerate(class_indices):
-                folds[i % self.n_splits].append(idx)
-        for fold_i in range(self.n_splits):
-            test_idx = np.array(folds[fold_i])
-            train_idx = np.concatenate([np.array(folds[j]) for j in range(self.n_splits) if j != fold_i])
+        y = list(y)
+        classes = sorted(set(y))
+        rng = _random.Random(self.random_state)
+        # group indices by class
+        class_indices = {c: [i for i, v in enumerate(y) if v == c] for c in classes}
+        if self.shuffle:
+            for c in classes:
+                rng.shuffle(class_indices[c])
+        # assign each index to a fold
+        fold_indices = [[] for _ in range(self.n_splits)]
+        for c in classes:
+            idxs = class_indices[c]
+            for i, idx in enumerate(idxs):
+                fold_indices[i % self.n_splits].append(idx)
+        for fold in range(self.n_splits):
+            test_idx = fold_indices[fold]
+            train_idx = [i for f in range(self.n_splits) if f != fold for i in fold_indices[f]]
             yield train_idx, test_idx
 
 
-def cross_val_score(estimator, X, y, cv=5, scoring='accuracy') -> np.ndarray:
-    X, y = np.array(X), np.array(y)
-    kf = KFold(n_splits=cv, shuffle=True, random_state=42)
+def cross_val_score(estimator, X, y, cv=5, scoring=None):
+    X, y = list(X), list(y)
+    kf = KFold(n_splits=cv)
     scores = []
     for train_idx, test_idx in kf.split(X):
-        X_train, X_test = X[train_idx], X[test_idx]
-        y_train, y_test = y[train_idx], y[test_idx]
-        estimator.fit(X_train, y_train)
-        if scoring == 'accuracy' or scoring == 'r2':
-            scores.append(estimator.score(X_test, y_test))
+        X_tr = [X[i] for i in train_idx]
+        y_tr = [y[i] for i in train_idx]
+        X_te = [X[i] for i in test_idx]
+        y_te = [y[i] for i in test_idx]
+        est = estimator.__class__(**{k: v for k, v in estimator.__dict__.items()
+                                     if not k.endswith('_')})
+        est.fit(X_tr, y_tr)
+        if scoring is None:
+            score = est.score(X_te, y_te)
+        elif callable(scoring):
+            score = scoring(est, X_te, y_te)
         else:
-            scores.append(estimator.score(X_test, y_test))
-    return np.array(scores)
+            score = est.score(X_te, y_te)
+        scores.append(score)
+    return scores
 
 
 class GridSearchCV:
-    def __init__(self, estimator, param_grid: Dict, cv=5, scoring='accuracy', refit=True, n_jobs=1):
+    def __init__(self, estimator, param_grid, cv=5, scoring=None, refit=True):
         self.estimator = estimator
         self.param_grid = param_grid
         self.cv = cv
         self.scoring = scoring
         self.refit = refit
-        self.n_jobs = n_jobs
-        self.best_params_: Optional[Dict] = None
-        self.best_score_: float = -np.inf
-        self.best_estimator_ = None
-        self.cv_results_: Dict = {}
 
     def _param_combinations(self):
         from itertools import product
         keys = list(self.param_grid.keys())
-        values = list(self.param_grid.values())
-        for combo in product(*values):
+        vals = list(self.param_grid.values())
+        for combo in product(*vals):
             yield dict(zip(keys, combo))
 
-    def fit(self, X, y) -> 'GridSearchCV':
-        X, y = np.array(X), np.array(y)
-        results = []
+    def fit(self, X, y):
+        self.best_score_ = float('-inf')
+        self.best_params_ = None
+        X, y = list(X), list(y)
         for params in self._param_combinations():
-            est = type(self.estimator)(**{**self.estimator.__dict__, **params})
-            scores = cross_val_score(est, X, y, cv=self.cv, scoring=self.scoring)
-            mean_score = scores.mean()
-            results.append({'params': params, 'mean_test_score': mean_score, 'std_test_score': scores.std()})
+            scores = []
+            kf = KFold(n_splits=self.cv)
+            for train_idx, test_idx in kf.split(X):
+                X_tr = [X[i] for i in train_idx]
+                y_tr = [y[i] for i in train_idx]
+                X_te = [X[i] for i in test_idx]
+                y_te = [y[i] for i in test_idx]
+                cls = self.estimator.__class__
+                est = cls(**params)
+                est.fit(X_tr, y_tr)
+                score = est.score(X_te, y_te)
+                scores.append(score)
+            mean_score = sum(scores) / len(scores)
             if mean_score > self.best_score_:
                 self.best_score_ = mean_score
                 self.best_params_ = params
-        self.cv_results_ = {k: [r[k] for r in results] for k in results[0]}
-        if self.refit:
-            self.best_estimator_ = type(self.estimator)(**{**self.estimator.__dict__, **self.best_params_})
+        if self.refit and self.best_params_:
+            self.best_estimator_ = self.estimator.__class__(**self.best_params_)
             self.best_estimator_.fit(X, y)
         return self
 
-    def predict(self, X) -> np.ndarray:
+    def predict(self, X):
         return self.best_estimator_.predict(X)
 
-    def score(self, X, y) -> float:
+    def score(self, X, y):
         return self.best_estimator_.score(X, y)
 
 
 class RandomizedSearchCV:
-    def __init__(self, estimator, param_distributions: Dict, n_iter=10, cv=5,
-                 scoring='accuracy', refit=True, random_state=None):
+    def __init__(self, estimator, param_distributions, n_iter=10, cv=5,
+                 scoring=None, random_state=None, refit=True):
         self.estimator = estimator
         self.param_distributions = param_distributions
         self.n_iter = n_iter
         self.cv = cv
         self.scoring = scoring
-        self.refit = refit
         self.random_state = random_state
-        self.best_params_: Optional[Dict] = None
-        self.best_score_: float = -np.inf
-        self.best_estimator_ = None
+        self.refit = refit
 
-    def fit(self, X, y) -> 'RandomizedSearchCV':
-        if self.random_state is not None:
-            np.random.seed(self.random_state)
-        X, y = np.array(X), np.array(y)
+    def _sample_params(self, rng):
+        params = {}
+        for k, v in self.param_distributions.items():
+            if hasattr(v, 'rvs'):
+                params[k] = v.rvs()
+            elif isinstance(v, list):
+                params[k] = rng.choice(v)
+            else:
+                params[k] = v
+        return params
+
+    def fit(self, X, y):
+        rng = _random.Random(self.random_state)
+        self.best_score_ = float('-inf')
+        self.best_params_ = None
+        X, y = list(X), list(y)
         for _ in range(self.n_iter):
-            params = {k: np.random.choice(v) if isinstance(v, (list, np.ndarray))
-                      else float(np.random.uniform(*v)) for k, v in self.param_distributions.items()}
-            try:
-                est = type(self.estimator)(**{**self.estimator.__dict__, **params})
-                scores = cross_val_score(est, X, y, cv=self.cv, scoring=self.scoring)
-                mean_score = scores.mean()
-                if mean_score > self.best_score_:
-                    self.best_score_ = mean_score
-                    self.best_params_ = params
-            except Exception:
-                continue
-        if self.refit and self.best_params_ is not None:
-            self.best_estimator_ = type(self.estimator)(**{**self.estimator.__dict__, **self.best_params_})
+            params = self._sample_params(rng)
+            scores = []
+            kf = KFold(n_splits=self.cv)
+            for train_idx, test_idx in kf.split(X):
+                X_tr = [X[i] for i in train_idx]
+                y_tr = [y[i] for i in train_idx]
+                X_te = [X[i] for i in test_idx]
+                y_te = [y[i] for i in test_idx]
+                est = self.estimator.__class__(**params)
+                est.fit(X_tr, y_tr)
+                score = est.score(X_te, y_te)
+                scores.append(score)
+            mean_score = sum(scores) / len(scores)
+            if mean_score > self.best_score_:
+                self.best_score_ = mean_score
+                self.best_params_ = params
+        if self.refit and self.best_params_:
+            self.best_estimator_ = self.estimator.__class__(**self.best_params_)
             self.best_estimator_.fit(X, y)
         return self
 
-    def predict(self, X) -> np.ndarray:
+    def predict(self, X):
         return self.best_estimator_.predict(X)

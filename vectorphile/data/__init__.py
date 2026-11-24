@@ -17,9 +17,12 @@ def concat(dfs, axis=0, ignore_index=False) -> DataFrame:
     return DataFrame.concat(dfs, axis=axis, ignore_index=ignore_index)
 
 
+from vectorphile.data import sql
+from vectorphile.data.sql import query as sql_query, register as sql_register
+
 from vectorphile.data import datasets
 from vectorphile.data.datasets import (
-    Dataset, TensorDataset, Subset, ConcatDataset,
+    Dataset, TensorDataset, IterableDataset, ChainIterableDataset, Subset, ConcatDataset,
     Sampler, SequentialSampler, RandomSampler,
     WeightedRandomSampler, DistributedSampler,
     DataLoader,
@@ -32,7 +35,7 @@ __all__ = [
     'Series', 'DataFrame', 'Index', 'RangeIndex', 'GroupBy',
     'read_csv', 'read_json', 'read_parquet', 'concat',
     'datasets',
-    'Dataset', 'TensorDataset', 'Subset', 'ConcatDataset',
+    'Dataset', 'TensorDataset', 'IterableDataset', 'ChainIterableDataset', 'Subset', 'ConcatDataset',
     'Sampler', 'SequentialSampler', 'RandomSampler',
     'WeightedRandomSampler', 'DistributedSampler',
     'DataLoader',

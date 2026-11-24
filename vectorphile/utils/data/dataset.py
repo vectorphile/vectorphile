@@ -1,6 +1,5 @@
 """Dataset abstractions."""
 from __future__ import annotations
-import numpy as np
 from typing import Tuple
 from vectorphile.core.tensor import Tensor
 

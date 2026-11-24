@@ -1,37 +1,71 @@
 """Graph Neural Networks — GCN, GAT, GraphSAGE, GIN."""
 from __future__ import annotations
-import numpy as np
+import math as _math
+import random as _random
 from typing import Optional, List, Tuple
 from vectorphile.nn.module import Module
 from vectorphile.core.tensor import Tensor
+from vectorphile._core.ndarray import array as _nd_arr, NDArray
 
 
-def _relu(x): return np.maximum(x, 0)
-def _softmax(x, axis=-1):
-    e = np.exp(x - x.max(axis=axis, keepdims=True))
-    return e / (e.sum(axis=axis, keepdims=True) + 1e-9)
+def _nd_randn(shape, scale=1.0):
+    n = 1
+    for s in shape: n *= s
+    flat = [_math.sqrt(-2*_math.log(max(_random.random(),1e-10)))*_math.cos(2*_math.pi*_random.random())*scale
+            for _ in range(n)]
+    return _nd_arr(flat, dtype='float32').reshape(shape)
+
+def _nd_zeros(shape):
+    n = 1
+    for s in shape: n *= s
+    return _nd_arr([0.0]*n, dtype='float32').reshape(shape)
+
+def _nd_ones(shape):
+    n = 1
+    for s in shape: n *= s
+    return _nd_arr([1.0]*n, dtype='float32').reshape(shape)
 
 
-def _normalize_adj(adj: np.ndarray) -> np.ndarray:
-    """Symmetric normalization: D^{-1/2} A D^{-1/2} (Kipf & Welling 2017).
+def _relu(x: NDArray) -> NDArray:
+    fl = x.to_flat_list()
+    return _nd_arr([max(0.0, v) for v in fl], dtype='float32').reshape(x.shape)
 
-    Args:
-        adj: (N, N) adjacency matrix (can be sparse — dense for simplicity)
-    Returns:
-        normalized adjacency (N, N)
-    """
-    # Add self-loops: Ã = A + I
-    A = adj + np.eye(adj.shape[0], dtype=np.float32)
-    D = A.sum(axis=1)
-    D_inv_sqrt = np.diag(1.0 / np.sqrt(D + 1e-6))
-    return D_inv_sqrt @ A @ D_inv_sqrt
+def _softmax_rows(x: NDArray) -> NDArray:
+    """Row-wise softmax for 2D (N, N) NDArray."""
+    N = x.shape[0]
+    fl = x.to_flat_list()
+    result = []
+    for i in range(N):
+        row = fl[i*N:(i+1)*N]
+        mx = max(row)
+        exps = [_math.exp(v - mx) for v in row]
+        s = sum(exps) + 1e-9
+        result.extend([v / s for v in exps])
+    return _nd_arr(result, dtype='float32').reshape((N, N))
 
 
-def _degree_norm_adj(adj: np.ndarray) -> np.ndarray:
-    """Row-wise D^{-1} normalization for GraphSAGE mean aggregation."""
-    A = adj + np.eye(adj.shape[0], dtype=np.float32)
-    D = A.sum(axis=1, keepdims=True)
-    return A / (D + 1e-6)
+def _normalize_adj(adj: NDArray) -> NDArray:
+    """Symmetric normalization: D^{-1/2} A D^{-1/2}."""
+    N = adj.shape[0]
+    af = adj.to_flat_list()
+    # Add self-loops
+    a2 = [af[i*N+j] + (1.0 if i == j else 0.0) for i in range(N) for j in range(N)]
+    # Row sums (degrees)
+    d = [sum(a2[i*N:(i+1)*N]) for i in range(N)]
+    d_inv_sqrt = [1.0 / _math.sqrt(di + 1e-6) for di in d]
+    # D^{-1/2} A D^{-1/2}
+    result = [d_inv_sqrt[i] * a2[i*N+j] * d_inv_sqrt[j] for i in range(N) for j in range(N)]
+    return _nd_arr(result, dtype='float32').reshape((N, N))
+
+
+def _degree_norm_adj(adj: NDArray) -> NDArray:
+    """Row-wise D^{-1} normalization."""
+    N = adj.shape[0]
+    af = adj.to_flat_list()
+    a2 = [af[i*N+j] + (1.0 if i == j else 0.0) for i in range(N) for j in range(N)]
+    d = [sum(a2[i*N:(i+1)*N]) for i in range(N)]
+    result = [a2[i*N+j] / (d[i] + 1e-6) for i in range(N) for j in range(N)]
+    return _nd_arr(result, dtype='float32').reshape((N, N))
 
 
 # ── GCN ───────────────────────────────────────────────────────────────────────
@@ -48,32 +82,25 @@ class GCNLayer(Module):
                  bias: bool = True, activation: str = 'relu'):
         super().__init__()
         self.activation = activation
-        scale = np.sqrt(2.0 / in_features)
-        self.weight = Tensor(np.random.randn(in_features, out_features).astype(np.float32) * scale)
+        scale = _math.sqrt(2.0 / in_features)
+        self.weight = Tensor(_nd_randn((in_features, out_features), scale))
         self.weight.requires_grad = True
         self._parameters['weight'] = self.weight
         if bias:
-            self.bias = Tensor(np.zeros(out_features, dtype=np.float32))
+            self.bias = Tensor(_nd_zeros((out_features,)))
             self.bias.requires_grad = True
             self._parameters['bias'] = self.bias
         else:
             self.bias = None
 
-    def forward(self, x: Tensor, adj: np.ndarray) -> Tensor:
-        """
-        Args:
-            x: (N, in_features) node feature matrix
-            adj: (N, N) adjacency matrix (unnormalized; will be normalized internally)
-        Returns:
-            (N, out_features)
-        """
+    def forward(self, x: Tensor, adj: NDArray) -> Tensor:
         adj_norm = _normalize_adj(adj)
         out = adj_norm @ x._data @ self.weight._data
         if self.bias is not None:
             out = out + self.bias._data
         if self.activation == 'relu':
             out = _relu(out)
-        return Tensor(out.astype(np.float32))
+        return Tensor(out)
 
 
 class GCN(Module):
@@ -101,20 +128,14 @@ class GCN(Module):
         self.out_layer = GCNLayer(dims[-1], out_features, activation='none')
         self._modules['gcn_out'] = self.out_layer
 
-    def forward(self, x: Tensor, adj: np.ndarray) -> Tensor:
-        """
-        Args:
-            x: (N, in_features)
-            adj: (N, N) adjacency matrix
-        Returns:
-            (N, out_features) logits
-        """
+    def forward(self, x: Tensor, adj: NDArray) -> Tensor:
         d = x._data
         for layer in self.layers:
             d = layer(Tensor(d), adj)._data
             if self.dropout > 0 and self.training:
-                mask = np.random.binomial(1, 1 - self.dropout, d.shape).astype(np.float32)
-                d = d * mask / (1 - self.dropout)
+                df = d.to_flat_list()
+                df = [v * (1.0 if _random.random() < (1 - self.dropout) else 0.0) / (1 - self.dropout) for v in df]
+                d = _nd_arr(df, dtype='float32').reshape(d.shape)
         return self.out_layer(Tensor(d), adj)
 
 
@@ -142,59 +163,70 @@ class GATLayer(Module):
         self.concat       = concat
 
         # W: (num_heads, in_features, out_features)
-        self.W = Tensor(np.random.randn(num_heads, in_features, out_features).astype(np.float32)
-                        * np.sqrt(2.0 / in_features))
+        self.W = Tensor(_nd_randn((num_heads, in_features, out_features), _math.sqrt(2.0 / in_features)))
         self.W.requires_grad = True
         self._parameters['W'] = self.W
         # Attention vector a: (num_heads, 2*out_features)
-        self.a = Tensor(np.random.randn(num_heads, 2 * out_features).astype(np.float32) * 0.01)
+        self.a = Tensor(_nd_randn((num_heads, 2 * out_features), 0.01))
         self.a.requires_grad = True
         self._parameters['a'] = self.a
 
-    def forward(self, x: Tensor, adj: np.ndarray) -> Tensor:
-        """
-        Args:
-            x: (N, in_features)
-            adj: (N, N) binary adjacency matrix (1 = connected, 0 = not)
-        Returns:
-            (N, num_heads * out_features) if concat else (N, out_features)
-        """
-        N = x._data.shape[0]
-        h = x._data  # (N, in_features)
+    def forward(self, x: Tensor, adj: NDArray) -> Tensor:
+        N, F = x._data.shape
+        hf = x._data.to_flat_list()
+        af = adj.to_flat_list()
+        Wf = self.W._data.to_flat_list()   # (heads, in_features, out_features)
+        attn_f = self.a._data.to_flat_list()  # (heads, 2*out_features)
+        O = self.out_features
 
         head_outputs = []
         for k in range(self.num_heads):
-            Wh = h @ self.W._data[k]   # (N, out_features)
-            a_k = self.a._data[k]      # (2*out_features,)
-            a1  = a_k[:self.out_features]   # source attention
-            a2  = a_k[self.out_features:]   # target attention
-
-            # e_{ij} = LeakyReLU(a1·h_i + a2·h_j)
-            src_scores = Wh @ a1   # (N,)
-            tgt_scores = Wh @ a2   # (N,)
-            # Broadcast: (N, N) attention logits
-            e = src_scores[:, None] + tgt_scores[None, :]  # (N, N)
-            e = np.where(e > 0, e, self.alpha_lr * e)       # LeakyReLU
-
-            # Mask non-edges (set to -inf before softmax)
-            mask = adj == 0
-            e = np.where(mask, -1e9, e)
-            attn = _softmax(e, axis=-1)   # (N, N)
-
+            # Extract W[k]: (F, O)
+            Wk = Wf[k*F*O:(k+1)*F*O]
+            # Wh = h @ W[k]: (N, O)
+            Wh = []
+            for i in range(N):
+                for o in range(O):
+                    s = sum(hf[i*F + f] * Wk[f*O + o] for f in range(F))
+                    Wh.append(s)
+            # a1 = attn[k, :O], a2 = attn[k, O:]
+            ak = attn_f[k*2*O:(k+1)*2*O]
+            a1 = ak[:O]; a2 = ak[O:]
+            # src_scores = Wh @ a1: (N,)
+            src = [sum(Wh[i*O+o] * a1[o] for o in range(O)) for i in range(N)]
+            tgt = [sum(Wh[i*O+o] * a2[o] for o in range(O)) for i in range(N)]
+            # e[i,j] = LeakyReLU(src[i] + tgt[j]), masked where adj==0
+            e = []
+            for i in range(N):
+                for j in range(N):
+                    raw = src[i] + tgt[j]
+                    lrelu = raw if raw > 0 else self.alpha_lr * raw
+                    # mask: if adj[i,j]==0, set to -1e9
+                    e.append(lrelu if af[i*N+j] > 0.5 else -1e9)
+            e_nd = _nd_arr(e, dtype='float32').reshape((N, N))
+            attn = _softmax_rows(e_nd)   # (N, N)
             if self.dropout > 0 and self.training:
-                drop_mask = np.random.binomial(1, 1 - self.dropout, attn.shape).astype(np.float32)
-                attn = attn * drop_mask / (1 - self.dropout)
-
-            # Aggregate
-            out_k = attn @ Wh   # (N, out_features)
+                atf = attn.to_flat_list()
+                atf = [v * (1.0 if _random.random() < (1-self.dropout) else 0.0) / (1-self.dropout) for v in atf]
+                attn = _nd_arr(atf, dtype='float32').reshape((N, N))
+            # out_k = attn @ Wh: (N, O)
+            Wh_nd = _nd_arr(Wh, dtype='float32').reshape((N, O))
+            out_k = attn @ Wh_nd
             if self.concat:
                 out_k = _relu(out_k)
             head_outputs.append(out_k)
 
         if self.concat:
-            return Tensor(np.concatenate(head_outputs, axis=-1).astype(np.float32))
-        # Average heads (last layer)
-        return Tensor(np.stack(head_outputs, axis=0).mean(0).astype(np.float32))
+            # concatenate along last axis: (N, heads*O)
+            from vectorphile.core.tensor import _nd_concatenate as _gat_cat
+            return Tensor(_gat_cat(head_outputs, axis=-1))
+        # Average heads
+        total = head_outputs[0]
+        for h_out in head_outputs[1:]:
+            total = total + h_out
+        hf2 = total.to_flat_list()
+        avg = _nd_arr([v / self.num_heads for v in hf2], dtype='float32').reshape((N, O))
+        return Tensor(avg)
 
 
 class GAT(Module):
@@ -224,12 +256,13 @@ class GAT(Module):
         self.out_layer = GATLayer(in_dim, out_features, num_heads=1, dropout=dropout, concat=False)
         self._modules['gat_out'] = self.out_layer
 
-    def forward(self, x: Tensor, adj: np.ndarray) -> Tensor:
+    def forward(self, x: Tensor, adj: NDArray) -> Tensor:
         d = x._data
         for layer in self.layers:
             if self.dropout > 0 and self.training:
-                mask = np.random.binomial(1, 1 - self.dropout, d.shape).astype(np.float32)
-                d = d * mask / (1 - self.dropout)
+                df = d.to_flat_list()
+                df = [v * (1.0 if _random.random() < (1-self.dropout) else 0.0) / (1-self.dropout) for v in df]
+                d = _nd_arr(df, dtype='float32').reshape(d.shape)
             d = layer(Tensor(d), adj)._data
         return self.out_layer(Tensor(d), adj)
 
@@ -249,45 +282,59 @@ class SAGELayer(Module):
         super().__init__()
         self.aggregator = aggregator
         # W: concatenated (self + aggregated) → out
-        self.W = Tensor(np.random.randn(in_features * 2, out_features).astype(np.float32)
-                        * np.sqrt(2.0 / (in_features * 2)))
+        self.W = Tensor(_nd_randn((in_features * 2, out_features), _math.sqrt(2.0 / (in_features * 2))))
         self.W.requires_grad = True; self._parameters['W'] = self.W
         if bias:
-            self.b = Tensor(np.zeros(out_features, dtype=np.float32))
+            self.b = Tensor(_nd_zeros((out_features,)))
             self.b.requires_grad = True; self._parameters['b'] = self.b
         else:
             self.b = None
 
-    def _aggregate(self, h: np.ndarray, adj: np.ndarray) -> np.ndarray:
-        """Aggregate neighborhood features."""
-        # Mask self-connections for aggregation
-        A = adj.copy()
-        np.fill_diagonal(A, 0)
-        counts = A.sum(axis=1, keepdims=True).clip(min=1)
+    def _aggregate(self, h: NDArray, adj: NDArray) -> NDArray:
+        N, F = h.shape
+        af = adj.to_flat_list()
+        hf = h.to_flat_list()
+        # Remove diagonal
+        A_no_self = [af[i*N+j] if i != j else 0.0 for i in range(N) for j in range(N)]
         if self.aggregator == 'mean':
-            return (A @ h) / counts
-        elif self.aggregator == 'max':
-            N = h.shape[0]
-            agg = np.full_like(h, -1e9)
+            agg = []
             for i in range(N):
-                nbr = np.where(A[i] > 0)[0]
-                if len(nbr) > 0:
-                    agg[i] = h[nbr].max(axis=0)
-                else:
-                    agg[i] = np.zeros(h.shape[1], dtype=np.float32)
-            return agg
-        return (A @ h) / counts  # fallback to mean
+                row = A_no_self[i*N:(i+1)*N]
+                cnt = max(sum(row), 1.0)
+                for f in range(F):
+                    agg.append(sum(row[j] * hf[j*F+f] for j in range(N)) / cnt)
+            return _nd_arr(agg, dtype='float32').reshape((N, F))
+        elif self.aggregator == 'max':
+            agg = []
+            for i in range(N):
+                row = A_no_self[i*N:(i+1)*N]
+                nbrs = [j for j in range(N) if row[j] > 0.5]
+                for f in range(F):
+                    if nbrs:
+                        agg.append(max(hf[j*F+f] for j in nbrs))
+                    else:
+                        agg.append(0.0)
+            return _nd_arr(agg, dtype='float32').reshape((N, F))
+        return self._aggregate_mean(h, adj)
 
-    def forward(self, x: Tensor, adj: np.ndarray) -> Tensor:
+    def forward(self, x: Tensor, adj: NDArray) -> Tensor:
         h = x._data
         h_agg = self._aggregate(h, adj)
-        h_cat = np.concatenate([h, h_agg], axis=-1)
+        from vectorphile.core.tensor import _nd_concatenate as _sage_cat
+        h_cat = _sage_cat([h, h_agg], axis=-1)
         out = h_cat @ self.W._data
         if self.b is not None:
             out = out + self.b._data
         # L2 normalize (standard GraphSAGE)
-        norm = np.linalg.norm(out, axis=-1, keepdims=True).clip(min=1e-6)
-        return Tensor(_relu(out / norm).astype(np.float32))
+        N, O = out.shape
+        of = out.to_flat_list()
+        norm_flat = []
+        for i in range(N):
+            row = of[i*O:(i+1)*O]
+            n_val = max(_math.sqrt(sum(v**2 for v in row)), 1e-6)
+            norm_flat.extend([v / n_val for v in row])
+        normed = _nd_arr(norm_flat, dtype='float32').reshape((N, O))
+        return Tensor(_relu(normed))
 
 
 class GraphSAGE(Module):
@@ -314,18 +361,19 @@ class GraphSAGE(Module):
             layer = SAGELayer(dims[i], dims[i + 1], aggregator)
             self.layers.append(layer)
             self._modules[f'sage_{i}'] = layer
-        self.out_w = Tensor(np.random.randn(dims[-1], out_features).astype(np.float32) * 0.02)
-        self.out_b = Tensor(np.zeros(out_features, dtype=np.float32))
+        self.out_w = Tensor(_nd_randn((dims[-1], out_features), 0.02))
+        self.out_b = Tensor(_nd_zeros((out_features,)))
         self.out_w.requires_grad = True; self.out_b.requires_grad = True
         self._parameters['out_w'] = self.out_w; self._parameters['out_b'] = self.out_b
 
-    def forward(self, x: Tensor, adj: np.ndarray) -> Tensor:
+    def forward(self, x: Tensor, adj: NDArray) -> Tensor:
         d = x._data
         for layer in self.layers:
             d = layer(Tensor(d), adj)._data
             if self.dropout > 0 and self.training:
-                mask = np.random.binomial(1, 1 - self.dropout, d.shape).astype(np.float32)
-                d = d * mask / (1 - self.dropout)
+                df = d.to_flat_list()
+                df = [v * (1.0 if _random.random() < (1-self.dropout) else 0.0) / (1-self.dropout) for v in df]
+                d = _nd_arr(df, dtype='float32').reshape(d.shape)
         return Tensor(d @ self.out_w._data + self.out_b._data)
 
 
@@ -345,51 +393,67 @@ class GINLayer(Module):
         super().__init__()
         mlp_hidden = mlp_hidden or out_features
         self.train_eps_flag = train_eps
-        self.epsilon = Tensor(np.array([eps], dtype=np.float32))
+        self.epsilon = Tensor(_nd_arr([eps], dtype='float32').reshape((1,)))
         if train_eps:
             self.epsilon.requires_grad = True
             self._parameters['epsilon'] = self.epsilon
         # 2-layer MLP
-        self.w1 = Tensor(np.random.randn(in_features, mlp_hidden).astype(np.float32) * np.sqrt(2.0 / in_features))
-        self.b1 = Tensor(np.zeros(mlp_hidden, dtype=np.float32))
-        self.w2 = Tensor(np.random.randn(mlp_hidden, out_features).astype(np.float32) * np.sqrt(2.0 / mlp_hidden))
-        self.b2 = Tensor(np.zeros(out_features, dtype=np.float32))
+        self.w1 = Tensor(_nd_randn((in_features, mlp_hidden), _math.sqrt(2.0 / in_features)))
+        self.b1 = Tensor(_nd_zeros((mlp_hidden,)))
+        self.w2 = Tensor(_nd_randn((mlp_hidden, out_features), _math.sqrt(2.0 / mlp_hidden)))
+        self.b2 = Tensor(_nd_zeros((out_features,)))
         # BN
-        self.bn_w = Tensor(np.ones(mlp_hidden, dtype=np.float32))
-        self.bn_b = Tensor(np.zeros(mlp_hidden, dtype=np.float32))
-        self._rm = np.zeros(mlp_hidden, dtype=np.float32)
-        self._rv = np.ones(mlp_hidden, dtype=np.float32)
+        self.bn_w = Tensor(_nd_ones((mlp_hidden,)))
+        self.bn_b = Tensor(_nd_zeros((mlp_hidden,)))
+        self._rm = [0.0] * mlp_hidden
+        self._rv = [1.0] * mlp_hidden
         for n, p in [('w1',self.w1),('b1',self.b1),('w2',self.w2),('b2',self.b2),
                      ('bn_w',self.bn_w),('bn_b',self.bn_b)]:
             p.requires_grad = True; self._parameters[n] = p
 
-    def _bn(self, x):
+    def _bn(self, x: NDArray) -> NDArray:
+        N, F = x.shape
+        xf = x.to_flat_list()
+        wf = self.bn_w._data.to_flat_list()
+        bf = self.bn_b._data.to_flat_list()
         if self.training:
-            m, v = x.mean(0), x.var(0)
-            self._rm[:] = 0.9 * self._rm + 0.1 * m
-            self._rv[:] = 0.9 * self._rv + 0.1 * v
+            # per-feature mean/var across N
+            for f in range(F):
+                col = [xf[i*F+f] for i in range(N)]
+                mu = sum(col) / N
+                va = sum((v-mu)**2 for v in col) / N
+                self._rm[f] = 0.9 * self._rm[f] + 0.1 * mu
+                self._rv[f] = 0.9 * self._rv[f] + 0.1 * va
+            m_list = [sum(xf[i*F+f] for i in range(N))/N for f in range(F)]
+            v_list = [sum((xf[i*F+f] - m_list[f])**2 for i in range(N))/N for f in range(F)]
         else:
-            m, v = self._rm, self._rv
-        return (x - m) / np.sqrt(v + 1e-5) * self.bn_w._data + self.bn_b._data
+            m_list = self._rm[:]
+            v_list = self._rv[:]
+        result = []
+        for i in range(N):
+            for f in range(F):
+                inv = 1.0 / _math.sqrt(v_list[f] + 1e-5)
+                result.append((xf[i*F+f] - m_list[f]) * inv * wf[f] + bf[f])
+        return _nd_arr(result, dtype='float32').reshape((N, F))
 
-    def forward(self, x: Tensor, adj: np.ndarray) -> Tensor:
-        """
-        Args:
-            x: (N, in_features)
-            adj: (N, N) adjacency matrix (no self-loops expected; added internally)
-        Returns:
-            (N, out_features)
-        """
+    def forward(self, x: Tensor, adj: NDArray) -> Tensor:
         h = x._data
+        N, F = h.shape
+        af = adj.to_flat_list()
+        hf = h.to_flat_list()
         # Sum aggregation (no self-loop — ε handles self)
-        A_no_self = adj.copy(); np.fill_diagonal(A_no_self, 0)
-        agg = A_no_self @ h    # (N, in_features)
-        eps = self.epsilon._data[0]
-        h_new = (1 + eps) * h + agg
+        agg_flat = []
+        for i in range(N):
+            for f in range(F):
+                s = sum(af[i*N+j] * hf[j*F+f] for j in range(N) if j != i)
+                agg_flat.append(s)
+        agg = _nd_arr(agg_flat, dtype='float32').reshape((N, F))
+        eps_v = self.epsilon._data.to_flat_list()[0]
+        h_new = h + h * eps_v + agg
         # MLP
         h_new = _relu(self._bn(h_new @ self.w1._data + self.b1._data))
         h_new = h_new @ self.w2._data + self.b2._data
-        return Tensor(h_new.astype(np.float32))
+        return Tensor(h_new)
 
 
 class GIN(Module):
@@ -422,56 +486,62 @@ class GIN(Module):
             self._modules[f'gin_{i}'] = layer
             in_dim = hidden_dim
         # Readout MLP: concatenate all layer representations
-        self.mlp_w1 = Tensor(np.random.randn(hidden_dim * num_layers, hidden_dim).astype(np.float32) * 0.02)
-        self.mlp_b1 = Tensor(np.zeros(hidden_dim, dtype=np.float32))
-        self.mlp_w2 = Tensor(np.random.randn(hidden_dim, out_features).astype(np.float32) * 0.02)
-        self.mlp_b2 = Tensor(np.zeros(out_features, dtype=np.float32))
+        self.mlp_w1 = Tensor(_nd_randn((hidden_dim * num_layers, hidden_dim), 0.02))
+        self.mlp_b1 = Tensor(_nd_zeros((hidden_dim,)))
+        self.mlp_w2 = Tensor(_nd_randn((hidden_dim, out_features), 0.02))
+        self.mlp_b2 = Tensor(_nd_zeros((out_features,)))
         for n, p in [('mlp_w1',self.mlp_w1),('mlp_b1',self.mlp_b1),
                      ('mlp_w2',self.mlp_w2),('mlp_b2',self.mlp_b2)]:
             p.requires_grad = True; self._parameters[n] = p
 
-    def _pool(self, h: np.ndarray) -> np.ndarray:
-        if self.readout == 'sum':  return h.sum(0, keepdims=True)
-        if self.readout == 'max':  return h.max(0, keepdims=True)
-        return h.mean(0, keepdims=True)
+    def _pool(self, h: NDArray) -> NDArray:
+        N, F = h.shape
+        hf = h.to_flat_list()
+        if self.readout == 'sum':
+            row = [sum(hf[i*F+f] for i in range(N)) for f in range(F)]
+        elif self.readout == 'max':
+            row = [max(hf[i*F+f] for i in range(N)) for f in range(F)]
+        else:
+            row = [sum(hf[i*F+f] for i in range(N)) / N for f in range(F)]
+        return _nd_arr(row, dtype='float32').reshape((1, F))
 
-    def forward(self, x: Tensor, adj: np.ndarray,
-                batch: Optional[np.ndarray] = None) -> Tensor:
-        """
-        Args:
-            x: (N, in_features) node features
-            adj: (N, N) adjacency matrix
-            batch: (N,) int array mapping nodes to graphs (None = single graph)
-        Returns:
-            (num_graphs, out_features) logits
-        """
+    def forward(self, x: Tensor, adj: NDArray, batch=None) -> Tensor:
         d = x._data
         layer_reprs = []
         for layer in self.layers:
             d = layer(Tensor(d), adj)._data
             if self.dropout > 0 and self.training:
-                mask = np.random.binomial(1, 1 - self.dropout, d.shape).astype(np.float32)
-                d = d * mask / (1 - self.dropout)
+                df = d.to_flat_list()
+                df = [v * (1.0 if _random.random() < (1-self.dropout) else 0.0) / (1-self.dropout) for v in df]
+                d = _nd_arr(df, dtype='float32').reshape(d.shape)
             layer_reprs.append(d)
 
-        # Graph-level readout (concatenate representations from all layers)
+        from vectorphile.core.tensor import _nd_concatenate as _gin_cat
         if batch is None:
-            # Single graph
-            pooled = [self._pool(h) for h in layer_reprs]  # each (1, hidden_dim)
-            graph_repr = np.concatenate(pooled, axis=-1)    # (1, hidden_dim * num_layers)
+            pooled = [self._pool(h_rep) for h_rep in layer_reprs]
+            graph_repr = _gin_cat(pooled, axis=-1)
         else:
-            # Batched graphs
-            num_graphs = batch.max() + 1
+            # batch is a list of ints
+            if isinstance(batch, NDArray):
+                batch = [int(v) for v in batch.to_flat_list()]
+            num_graphs = max(batch) + 1
             graph_reprs = []
             for g in range(num_graphs):
-                mask_g = batch == g
-                pooled_g = [self._pool(h[mask_g]) for h in layer_reprs]
-                graph_reprs.append(np.concatenate(pooled_g, axis=-1))
-            graph_repr = np.concatenate(graph_reprs, axis=0)  # (G, hidden_dim * num_layers)
+                node_ids = [i for i, b in enumerate(batch) if b == g]
+                pooled_g = []
+                for h_rep in layer_reprs:
+                    hf = h_rep.to_flat_list()
+                    N_tot, F = h_rep.shape
+                    rows = [hf[i*F:(i+1)*F] for i in node_ids]
+                    sub_flat = [v for row in rows for v in row]
+                    sub = _nd_arr(sub_flat, dtype='float32').reshape((len(node_ids), F))
+                    pooled_g.append(self._pool(sub))
+                graph_reprs.append(_gin_cat(pooled_g, axis=-1))
+            graph_repr = _gin_cat(graph_reprs, axis=0)
 
-        # Classification MLP
         out = _relu(graph_repr @ self.mlp_w1._data + self.mlp_b1._data)
         if self.dropout > 0 and self.training:
-            mask = np.random.binomial(1, 1 - self.dropout, out.shape).astype(np.float32)
-            out = out * mask / (1 - self.dropout)
+            df = out.to_flat_list()
+            df = [v * (1.0 if _random.random() < (1-self.dropout) else 0.0) / (1-self.dropout) for v in df]
+            out = _nd_arr(df, dtype='float32').reshape(out.shape)
         return Tensor(out @ self.mlp_w2._data + self.mlp_b2._data)

@@ -8,7 +8,7 @@ import hashlib
 import tarfile
 import urllib.request
 import urllib.error
-import numpy as np
+import random as _random
 from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple, Union
 
 
@@ -26,13 +26,36 @@ class Dataset:
 
 class TensorDataset(Dataset):
     def __init__(self, *tensors):
-        self.tensors = [np.asarray(t.data if hasattr(t, 'data') else t) for t in tensors]
+        self.tensors = [(t.data if hasattr(t, 'data') else list(t)) for t in tensors]
 
     def __len__(self):
         return len(self.tensors[0])
 
     def __getitem__(self, idx):
         return tuple(t[idx] for t in self.tensors)
+
+
+class IterableDataset:
+    """Dataset that yields items one at a time from __iter__ (stream-based).
+
+    Mirrors torch.utils.data.IterableDataset. Override __iter__ to yield samples.
+    DataLoader wraps this with batch_size-based chunking.
+    """
+    def __iter__(self):
+        raise NotImplementedError
+
+    def __add__(self, other: 'IterableDataset') -> 'ChainIterableDataset':
+        return ChainIterableDataset([self, other])
+
+
+class ChainIterableDataset(IterableDataset):
+    """Concatenates multiple IterableDatasets into one stream."""
+    def __init__(self, datasets):
+        self.datasets = list(datasets)
+
+    def __iter__(self):
+        for ds in self.datasets:
+            yield from ds
 
 
 class Subset(Dataset):
@@ -96,8 +119,9 @@ class RandomSampler(Sampler):
 
     def __iter__(self):
         if self.replacement:
-            return iter(np.random.randint(0, self.n, self._num_samples).tolist())
-        return iter(np.random.permutation(self.n)[:self._num_samples].tolist())
+            return iter([_random.randint(0, self.n - 1) for _ in range(self._num_samples)])
+        indices = list(range(self.n)); _random.shuffle(indices)
+        return iter(indices[:self._num_samples])
 
     def __len__(self):
         return self._num_samples
@@ -105,15 +129,34 @@ class RandomSampler(Sampler):
 
 class WeightedRandomSampler(Sampler):
     def __init__(self, weights: Sequence[float], num_samples: int, replacement: bool = True):
-        self.weights = np.asarray(weights, dtype=np.float64)
-        self.weights /= self.weights.sum()
+        total = sum(weights)
+        self.weights = [w / total for w in weights]
         self.num_samples = num_samples
         self.replacement = replacement
 
     def __iter__(self):
-        indices = np.random.choice(len(self.weights), self.num_samples,
-                                   replace=self.replacement, p=self.weights)
-        return iter(indices.tolist())
+        population = list(range(len(self.weights)))
+        cum = []
+        s = 0.0
+        for w in self.weights:
+            s += w; cum.append(s)
+        def _sample():
+            r = _random.random()
+            for i, c in enumerate(cum):
+                if r <= c: return i
+            return len(cum) - 1
+        if self.replacement:
+            return iter([_sample() for _ in range(self.num_samples)])
+        # Without replacement: greedy weighted shuffle
+        chosen, used = [], set()
+        for _ in range(min(self.num_samples, len(population))):
+            r = _random.random()
+            s2 = 0.0
+            for i, w in enumerate(self.weights):
+                if i not in used: s2 += w
+                if s2 >= r and i not in used:
+                    chosen.append(i); used.add(i); break
+        return iter(chosen)
 
     def __len__(self):
         return self.num_samples
@@ -134,8 +177,9 @@ class DistributedSampler(Sampler):
 
     def __iter__(self):
         if self.shuffle:
-            rng = np.random.default_rng(self.seed + self.epoch)
-            indices = rng.permutation(self.n).tolist()
+            indices = list(range(self.n))
+            rng = _random.Random(self.seed + self.epoch)
+            rng.shuffle(indices)
         else:
             indices = list(range(self.n))
         if not self.drop_last:
@@ -156,17 +200,13 @@ class DistributedSampler(Sampler):
 # ── DataLoader ────────────────────────────────────────────────────────────────
 
 def _default_collate(batch):
-    """Stack a list of samples into a batched array."""
+    """Stack a list of samples into a batched list."""
     if isinstance(batch[0], (tuple, list)):
         return type(batch[0])(_default_collate(list(s[i] for s in batch))
                                for i in range(len(batch[0])))
     if isinstance(batch[0], dict):
         return {k: _default_collate([s[k] for s in batch]) for k in batch[0]}
-    try:
-        arr = np.stack([np.asarray(s) for s in batch], axis=0)
-        return arr
-    except Exception:
-        return batch
+    return batch
 
 
 class DataLoader:
@@ -310,10 +350,11 @@ class MNIST(Dataset):
             )
         with gzip.open(os.path.join(self.root, img_gz[0]), 'rb') as f:
             magic, n, h, w = struct.unpack('>IIII', f.read(16))
-            images = np.frombuffer(f.read(), dtype=np.uint8).reshape(n, h, w)
+            raw = f.read()
+            images = [[[raw[i*h*w + r*w + c] for c in range(w)] for r in range(h)] for i in range(n)]
         with gzip.open(os.path.join(self.root, lbl_gz[0]), 'rb') as f:
             magic, n = struct.unpack('>II', f.read(8))
-            labels = np.frombuffer(f.read(), dtype=np.uint8)
+            labels = list(f.read())
         return images, labels
 
     def __len__(self):
@@ -372,8 +413,15 @@ class CIFAR10(Dataset):
     def _load_batch(self, path: str):
         with open(path, 'rb') as f:
             d = pickle.load(f, encoding='bytes')
-        data = d[b'data'].reshape(-1, 3, 32, 32).transpose(0, 2, 3, 1)  # NHWC
-        labels = np.array(d[b'labels'])
+        raw = d[b'data']  # list or bytes-like, shape (N, 3072)
+        n = len(raw) // 3072 if isinstance(raw, (bytes, bytearray)) else len(raw)
+        # Convert to NHWC list format
+        data = []
+        for i in range(n):
+            row = raw[i*3072:(i+1)*3072] if isinstance(raw, (bytes, bytearray)) else raw[i]
+            img = [[[row[c*1024 + r*32 + col] for c in range(3)] for col in range(32)] for r in range(32)]
+            data.append(img)
+        labels = list(d[b'labels'])
         return data, labels
 
     def _load(self):
@@ -382,8 +430,8 @@ class CIFAR10(Dataset):
             raise FileNotFoundError(f"CIFAR-10 not found in {self.root}. Set download=True.")
         if self.train:
             arrays = [self._load_batch(os.path.join(base, f)) for f in self._TRAIN_FILES]
-            data = np.concatenate([a[0] for a in arrays], axis=0)
-            targets = np.concatenate([a[1] for a in arrays], axis=0)
+            data = [img for a in arrays for img in a[0]]
+            targets = [lbl for a in arrays for lbl in a[1]]
         else:
             data, targets = self._load_batch(os.path.join(base, self._TEST_FILE))
         return data, targets
@@ -427,7 +475,7 @@ class TinyShakespeare(Dataset):
         self.vocab_size = len(chars)
         self.stoi = {c: i for i, c in enumerate(chars)}
         self.itos = {i: c for i, c in enumerate(chars)}
-        data = np.array([self.stoi[c] for c in text], dtype=np.int64)
+        data = [self.stoi[c] for c in text]
         n = int(0.9 * len(data))
         self.data = data[:n] if split == 'train' else data[n:]
 
@@ -439,8 +487,8 @@ class TinyShakespeare(Dataset):
         y = self.data[idx + 1:idx + self.block_size + 1]
         return x, y
 
-    def encode(self, text: str) -> np.ndarray:
-        return np.array([self.stoi.get(c, 0) for c in text], dtype=np.int64)
+    def encode(self, text: str) -> list:
+        return [self.stoi.get(c, 0) for c in text]
 
     def decode(self, ids) -> str:
         return ''.join(self.itos.get(int(i), '?') for i in ids)
@@ -504,9 +552,14 @@ class RandomClassificationDataset(Dataset):
 
     def __init__(self, n_samples: int = 1000, n_features: int = 20, n_classes: int = 2,
                  seed: int = 42):
-        rng = np.random.default_rng(seed)
-        self.X = rng.standard_normal((n_samples, n_features)).astype(np.float32)
-        self.y = rng.integers(0, n_classes, n_samples)
+        import math
+        rng = _random.Random(seed)
+        # Box-Muller Gaussian
+        def _randn():
+            u1 = max(rng.random(), 1e-10); u2 = rng.random()
+            return math.sqrt(-2 * math.log(u1)) * math.cos(2 * math.pi * u2)
+        self.X = [[_randn() for _ in range(n_features)] for _ in range(n_samples)]
+        self.y = [rng.randint(0, n_classes - 1) for _ in range(n_samples)]
 
     def __len__(self):
         return len(self.X)
@@ -520,9 +573,14 @@ class RandomImageDataset(Dataset):
 
     def __init__(self, n_samples: int = 100, channels: int = 3, height: int = 32,
                  width: int = 32, n_classes: int = 10, seed: int = 42):
-        rng = np.random.default_rng(seed)
-        self.X = rng.standard_normal((n_samples, channels, height, width)).astype(np.float32)
-        self.y = rng.integers(0, n_classes, n_samples)
+        import math
+        rng = _random.Random(seed)
+        def _randn():
+            u1 = max(rng.random(), 1e-10); u2 = rng.random()
+            return math.sqrt(-2 * math.log(u1)) * math.cos(2 * math.pi * u2)
+        self.X = [[[[_randn() for _ in range(width)] for _ in range(height)]
+                   for _ in range(channels)] for _ in range(n_samples)]
+        self.y = [rng.randint(0, n_classes - 1) for _ in range(n_samples)]
 
     def __len__(self):
         return len(self.X)
@@ -547,15 +605,15 @@ def random_split(
         diff = n - sum(lengths)
         lengths[-1] += diff
 
-    indices = np.arange(n)
+    indices = list(range(n))
     if seed is not None:
-        rng = np.random.default_rng(seed)
-        indices = rng.permutation(indices)
+        rng = _random.Random(seed)
+        rng.shuffle(indices)
 
     subsets = []
     offset = 0
     for length in lengths:
-        subsets.append(Subset(dataset, indices[offset:offset + length].tolist()))
+        subsets.append(Subset(dataset, indices[offset:offset + length]))
         offset += length
     return subsets
 

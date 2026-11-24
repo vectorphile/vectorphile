@@ -13,7 +13,6 @@ import urllib.error
 from pathlib import Path
 from typing import Dict, List, Optional
 
-import numpy as np
 
 DEFAULT_CACHE_DIR = Path.home() / '.vectorphile' / 'weights'
 
@@ -215,22 +214,40 @@ def download_hf_model(
 
 # ── Safetensors parser ─────────────────────────────────────────────────────────
 
-_ST_DTYPE_MAP = {
-    'F64':  np.float64,
-    'F32':  np.float32,
-    'F16':  np.float16,
-    'BF16': None,          # special handling
-    'I64':  np.int64,
-    'I32':  np.int32,
-    'I16':  np.int16,
-    'I8':   np.int8,
-    'U8':   np.uint8,
-    'BOOL': np.bool_,
+_ST_STRUCT_FMT = {
+    'F32': ('f', 4), 'F64': ('d', 8),
+    'F16': None,     'BF16': None,
+    'I64': ('q', 8), 'I32': ('i', 4), 'I16': ('h', 2), 'I8': ('b', 1),
+    'U8':  ('B', 1), 'BOOL': ('?', 1),
 }
 
 
-def load_safetensors(path: Path) -> Dict[str, np.ndarray]:
-    """Parse .safetensors file → {name: float32 ndarray}."""
+def _bf16_to_f32(blob: bytes) -> list:
+    n = len(blob)//2
+    out = []
+    for i in range(n):
+        h = struct.unpack_from('<H', blob, i*2)[0]
+        # BF16 is just float32 with the low 16 bits zeroed
+        u32 = h << 16
+        (v,) = struct.unpack('<f', struct.pack('<I', u32))
+        out.append(v)
+    return out
+
+
+def _f16_to_f32(blob: bytes) -> list:
+    n = len(blob)//2; out = []
+    for i in range(n):
+        h = struct.unpack_from('<H', blob, i*2)[0]
+        sign = (h >> 15) & 1; exp = (h >> 10) & 0x1F; man = h & 0x3FF
+        if exp == 31: v = float('inf')*(-1 if sign else 1) if man==0 else float('nan')
+        elif exp == 0: v = man/(1<<24)
+        else: v = (1.0+man/(1<<10))*(2.0**(exp-15))
+        out.append(-v if sign else v)
+    return out
+
+
+def load_safetensors(path: Path) -> Dict[str, list]:
+    """Parse .safetensors file → {name: flat float32 list}."""
     with open(path, 'rb') as f:
         raw = f.read()
 
@@ -238,25 +255,26 @@ def load_safetensors(path: Path) -> Dict[str, np.ndarray]:
     header = json.loads(raw[8: 8 + header_len])
     data_start = 8 + header_len
 
-    out: Dict[str, np.ndarray] = {}
+    out: Dict[str, list] = {}
     for name, meta in header.items():
-        if name == '__metadata__':
-            continue
-        dtype_str = meta['dtype']
-        shape     = meta['shape']
+        if name == '__metadata__': continue
+        dtype_str = meta['dtype']; shape = meta['shape']
         begin, end = meta['data_offsets']
         blob = raw[data_start + begin: data_start + end]
 
         if dtype_str == 'BF16':
-            u16  = np.frombuffer(blob, dtype=np.uint16)
-            f32  = (u16.astype(np.uint32) << 16).view(np.float32)
-            arr  = f32.reshape(shape) if shape else f32
+            arr = _bf16_to_f32(blob)
+        elif dtype_str == 'F16':
+            arr = _f16_to_f32(blob)
+        elif dtype_str in _ST_STRUCT_FMT and _ST_STRUCT_FMT[dtype_str]:
+            fmt_char, item_size = _ST_STRUCT_FMT[dtype_str]
+            n = len(blob)//item_size
+            arr = [float(v) for v in struct.unpack(f'<{n}{fmt_char}', blob)]
         else:
-            np_dtype = _ST_DTYPE_MAP.get(dtype_str, np.float32)
-            arr = np.frombuffer(blob, dtype=np_dtype)
-            arr = arr.reshape(shape) if shape else arr
+            n = len(blob)//4
+            arr = list(struct.unpack(f'<{n}f', blob))
 
-        out[name] = arr.astype(np.float32)
+        out[name] = arr
 
     return out
 
@@ -264,18 +282,18 @@ def load_safetensors(path: Path) -> Dict[str, np.ndarray]:
 # ── PyTorch .bin loader ────────────────────────────────────────────────────────
 
 class _SafeUnpickler(pickle.Unpickler):
-    """Unpickler that converts torch storage objects to numpy without torch."""
+    """Unpickler that converts torch storage objects without torch/numpy."""
 
     _STORAGE = {
-        'FloatStorage':    np.float32,
-        'HalfStorage':     np.float16,
-        'BFloat16Storage': np.float32,
-        'DoubleStorage':   np.float64,
-        'LongStorage':     np.int64,
-        'IntStorage':      np.int32,
-        'ShortStorage':    np.int16,
-        'CharStorage':     np.int8,
-        'ByteStorage':     np.uint8,
+        'FloatStorage':    'float32',
+        'HalfStorage':     'float16',
+        'BFloat16Storage': 'float32',
+        'DoubleStorage':   'float64',
+        'LongStorage':     'int64',
+        'IntStorage':      'int32',
+        'ShortStorage':    'int16',
+        'CharStorage':     'int8',
+        'ByteStorage':     'uint8',
     }
 
     def find_class(self, module, name):

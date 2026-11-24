@@ -1,6 +1,7 @@
 """Adagrad optimizer."""
-import numpy as np
+import math as _math
 from vectorphile.optim.optimizer import Optimizer
+from vectorphile.optim.adam import _to_np, _write_back, _vec_scale, _vec_add, _vec_sub
 
 
 class Adagrad(Optimizer):
@@ -18,14 +19,19 @@ class Adagrad(Optimizer):
             for p in group['params']:
                 if p.grad is None:
                     continue
-                g = p.grad._data.copy()
+                g, sh = _to_np(p.grad._data)
+                g = g[:]
+                p_flat, p_sh = _to_np(p._data)
                 if wd != 0:
-                    g += wd * p._data
+                    g = _vec_add(g, _vec_scale(p_flat, wd))
                 pid = id(p)
+                n = len(g)
                 if pid not in self.state:
-                    self.state[pid] = {'step': 0, 'sum': np.zeros_like(p._data)}
+                    self.state[pid] = {'step': 0, 'sum': [0.0] * n}
                 s = self.state[pid]
                 s['step'] += 1
                 clr = lr / (1 + (s['step'] - 1) * lr_decay)
-                s['sum'] += g**2
-                p._data -= clr * g / (np.sqrt(s['sum']) + eps)
+                s['sum'] = _vec_add(s['sum'], [v * v for v in g])
+                denom = [_math.sqrt(max(v, 0.0)) + eps for v in s['sum']]
+                update = [g[i] / denom[i] for i in range(n)]
+                _write_back(p, _vec_sub(p_flat, _vec_scale(update, clr)), p_sh)

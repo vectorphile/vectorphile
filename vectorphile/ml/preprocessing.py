@@ -1,170 +1,139 @@
-"""Preprocessing utilities."""
-import numpy as np
-from typing import Optional, List
+"""Preprocessing transformers — pure Python."""
+import math
+import random as _random
+from typing import List, Optional
+from vectorphile.ml._np_compat import to_array as _ta
+
+
+def _col(X, j):
+    return [X[i][j] for i in range(len(X))]
+
+
+def _to_float_matrix(X):
+    return [[float(v) for v in row] for row in X]
 
 
 class StandardScaler:
-    def __init__(self, copy=True, with_mean=True, with_std=True):
-        self.copy = copy
-        self.with_mean = with_mean
-        self.with_std = with_std
-        self.mean_: Optional[np.ndarray] = None
-        self.scale_: Optional[np.ndarray] = None
-        self.var_: Optional[np.ndarray] = None
-
-    def fit(self, X) -> 'StandardScaler':
-        X = np.array(X, dtype=float)
-        self.mean_ = X.mean(axis=0) if self.with_mean else np.zeros(X.shape[1])
-        self.var_ = X.var(axis=0) if self.with_std else np.ones(X.shape[1])
-        self.scale_ = np.sqrt(self.var_)
-        self.scale_ = np.where(self.scale_ == 0, 1.0, self.scale_)
+    def fit(self, X):
+        X2 = _to_float_matrix(X)
+        n, p = len(X2), len(X2[0])
+        self.mean_ = [sum(_col(X2, j)) / n for j in range(p)]
+        self.scale_ = []
+        for j in range(p):
+            col = _col(X2, j)
+            var = sum((v - self.mean_[j])**2 for v in col) / n
+            self.scale_.append(math.sqrt(var) if var > 0 else 1.0)
         return self
 
-    def transform(self, X) -> np.ndarray:
-        X = np.array(X, dtype=float)
-        if self.copy:
-            X = X.copy()
-        if self.with_mean:
-            X -= self.mean_
-        if self.with_std:
-            X /= self.scale_
-        return X
+    def transform(self, X):
+        X2 = _to_float_matrix(X)
+        return _ta([[(X2[i][j] - self.mean_[j]) / self.scale_[j]
+                 for j in range(len(X2[0]))] for i in range(len(X2))])
 
-    def fit_transform(self, X) -> np.ndarray:
-        self.fit(X)
-        return self.transform(X)
+    def fit_transform(self, X):
+        return self.fit(X).transform(X)
 
-    def inverse_transform(self, X) -> np.ndarray:
-        X = np.array(X, dtype=float).copy()
-        X *= self.scale_
-        X += self.mean_
-        return X
+    def inverse_transform(self, X):
+        X2 = _to_float_matrix(X)
+        return [[X2[i][j] * self.scale_[j] + self.mean_[j]
+                 for j in range(len(X2[0]))] for i in range(len(X2))]
 
 
 class MinMaxScaler:
     def __init__(self, feature_range=(0, 1)):
         self.feature_range = feature_range
-        self.min_: Optional[np.ndarray] = None
-        self.scale_: Optional[np.ndarray] = None
-        self.data_min_: Optional[np.ndarray] = None
-        self.data_max_: Optional[np.ndarray] = None
 
-    def fit(self, X) -> 'MinMaxScaler':
-        X = np.array(X, dtype=float)
-        self.data_min_ = X.min(axis=0)
-        self.data_max_ = X.max(axis=0)
-        data_range = self.data_max_ - self.data_min_
-        data_range = np.where(data_range == 0, 1.0, data_range)
-        fmin, fmax = self.feature_range
-        self.scale_ = (fmax - fmin) / data_range
-        self.min_ = fmin - self.data_min_ * self.scale_
+    def fit(self, X):
+        X2 = _to_float_matrix(X)
+        p = len(X2[0])
+        self.data_min_ = [min(_col(X2, j)) for j in range(p)]
+        self.data_max_ = [max(_col(X2, j)) for j in range(p)]
+        self.scale_ = [(self.feature_range[1] - self.feature_range[0]) /
+                       max(self.data_max_[j] - self.data_min_[j], 1e-10)
+                       for j in range(p)]
         return self
 
-    def transform(self, X) -> np.ndarray:
-        return np.array(X, dtype=float) * self.scale_ + self.min_
+    def transform(self, X):
+        X2 = _to_float_matrix(X)
+        lo, hi = self.feature_range
+        return _ta([[(X2[i][j] - self.data_min_[j]) * self.scale_[j] + lo
+                 for j in range(len(X2[0]))] for i in range(len(X2))])
 
-    def fit_transform(self, X) -> np.ndarray:
-        self.fit(X)
-        return self.transform(X)
+    def fit_transform(self, X):
+        return self.fit(X).transform(X)
 
-    def inverse_transform(self, X) -> np.ndarray:
-        return (np.array(X, dtype=float) - self.min_) / self.scale_
+    def inverse_transform(self, X):
+        X2 = _to_float_matrix(X)
+        lo = self.feature_range[0]
+        return [[(X2[i][j] - lo) / self.scale_[j] + self.data_min_[j]
+                 for j in range(len(X2[0]))] for i in range(len(X2))]
 
 
 class RobustScaler:
-    def __init__(self, with_centering=True, with_scaling=True, quantile_range=(25.0, 75.0)):
-        self.with_centering = with_centering
-        self.with_scaling = with_scaling
-        self.quantile_range = quantile_range
-        self.center_: Optional[np.ndarray] = None
-        self.scale_: Optional[np.ndarray] = None
-
-    def fit(self, X) -> 'RobustScaler':
-        X = np.array(X, dtype=float)
-        if self.with_centering:
-            self.center_ = np.median(X, axis=0)
-        q_low, q_high = self.quantile_range
-        if self.with_scaling:
-            q = np.percentile(X, [q_low, q_high], axis=0)
-            iqr = q[1] - q[0]
-            self.scale_ = np.where(iqr == 0, 1.0, iqr)
+    def fit(self, X):
+        X2 = _to_float_matrix(X)
+        p = len(X2[0])
+        self.center_ = []
+        self.scale_ = []
+        for j in range(p):
+            col = sorted(_col(X2, j))
+            n = len(col)
+            med = col[n // 2] if n % 2 else (col[n//2-1] + col[n//2]) / 2
+            q1 = col[n // 4]
+            q3 = col[3 * n // 4]
+            self.center_.append(med)
+            self.scale_.append(max(q3 - q1, 1e-10))
         return self
 
-    def transform(self, X) -> np.ndarray:
-        X = np.array(X, dtype=float).copy()
-        if self.with_centering:
-            X -= self.center_
-        if self.with_scaling:
-            X /= self.scale_
-        return X
+    def transform(self, X):
+        X2 = _to_float_matrix(X)
+        return [[(X2[i][j] - self.center_[j]) / self.scale_[j]
+                 for j in range(len(X2[0]))] for i in range(len(X2))]
 
-    def fit_transform(self, X) -> np.ndarray:
-        self.fit(X)
-        return self.transform(X)
+    def fit_transform(self, X):
+        return self.fit(X).transform(X)
 
 
 class LabelEncoder:
-    def __init__(self):
-        self.classes_: Optional[np.ndarray] = None
-
-    def fit(self, y) -> 'LabelEncoder':
-        self.classes_ = np.unique(y)
+    def fit(self, y):
+        self.classes_ = sorted(set(y))
+        self._map = {c: i for i, c in enumerate(self.classes_)}
         return self
 
-    def transform(self, y) -> np.ndarray:
-        y = np.array(y)
-        idx = np.searchsorted(self.classes_, y)
-        return idx
+    def transform(self, y):
+        return [self._map[v] for v in y]
 
-    def fit_transform(self, y) -> np.ndarray:
-        self.fit(y)
-        return self.transform(y)
+    def fit_transform(self, y):
+        return self.fit(y).transform(y)
 
-    def inverse_transform(self, y) -> np.ndarray:
-        return self.classes_[np.array(y)]
+    def inverse_transform(self, y):
+        return [self.classes_[int(v)] for v in y]
 
 
 class OneHotEncoder:
-    def __init__(self, sparse=False, drop=None, handle_unknown='error'):
+    def __init__(self, sparse=False, drop=None):
         self.sparse = sparse
         self.drop = drop
-        self.handle_unknown = handle_unknown
-        self.categories_: Optional[List[np.ndarray]] = None
 
-    def fit(self, X) -> 'OneHotEncoder':
-        X = np.array(X)
-        if X.ndim == 1:
-            X = X.reshape(-1, 1)
-        self.categories_ = [np.unique(X[:, i]) for i in range(X.shape[1])]
+    def fit(self, X):
+        X2 = [list(row) for row in X]
+        p = len(X2[0]) if X2 else 0
+        self.categories_ = [sorted(set(_col(X2, j))) for j in range(p)]
         return self
 
-    def transform(self, X) -> np.ndarray:
-        X = np.array(X)
-        if X.ndim == 1:
-            X = X.reshape(-1, 1)
-        parts = []
-        for i, cats in enumerate(self.categories_):
-            col = X[:, i]
-            ohe = np.zeros((len(col), len(cats)))
-            for j, c in enumerate(cats):
-                ohe[:, j] = (col == c)
-            parts.append(ohe)
-        return np.concatenate(parts, axis=1)
-
-    def fit_transform(self, X) -> np.ndarray:
-        self.fit(X)
-        return self.transform(X)
-
-    def inverse_transform(self, X) -> np.ndarray:
-        X = np.array(X)
+    def transform(self, X):
+        X2 = [list(row) for row in X]
         result = []
-        offset = 0
-        for cats in self.categories_:
-            k = len(cats)
-            chunk = X[:, offset:offset+k]
-            result.append(cats[chunk.argmax(axis=1)])
-            offset += k
-        return np.array(result).T
+        for row in X2:
+            encoded = []
+            for j, val in enumerate(row):
+                cats = self.categories_[j]
+                encoded.extend([1.0 if val == c else 0.0 for c in cats])
+            result.append(encoded)
+        return _ta(result)
+
+    def fit_transform(self, X):
+        return self.fit(X).transform(X)
 
 
 class PolynomialFeatures:
@@ -172,31 +141,73 @@ class PolynomialFeatures:
         self.degree = degree
         self.include_bias = include_bias
         self.interaction_only = interaction_only
-        self.n_features_in_: int = 0
-        self.n_output_features_: int = 0
 
-    def fit(self, X) -> 'PolynomialFeatures':
-        X = np.array(X, dtype=float)
-        self.n_features_in_ = X.shape[1]
+    def fit(self, X):
+        p = len(X[0]) if X else 0
+        self._p = p
+        self._combos = []
+        self._build_combos(p, self.degree)
         return self
 
-    def transform(self, X) -> np.ndarray:
+    def _build_combos(self, p, degree):
         from itertools import combinations_with_replacement, combinations
-        X = np.array(X, dtype=float)
-        n, p = X.shape
-        features = [np.ones((n, 1))] if self.include_bias else []
-        for d in range(1, self.degree + 1):
+        indices = list(range(p))
+        if self.include_bias:
+            self._combos.append(())
+        for d in range(1, degree + 1):
             if self.interaction_only and d > 1:
-                combos = combinations(range(p), d)
+                for combo in combinations(indices, d):
+                    self._combos.append(combo)
             else:
-                combos = combinations_with_replacement(range(p), d)
-            for combo in combos:
-                feat = np.prod(X[:, list(combo)], axis=1, keepdims=True)
-                features.append(feat)
-        result = np.concatenate(features, axis=1)
-        self.n_output_features_ = result.shape[1]
+                for combo in combinations_with_replacement(indices, d):
+                    self._combos.append(combo)
+
+    def transform(self, X):
+        result = []
+        for row in X:
+            new_row = []
+            for combo in self._combos:
+                val = 1.0
+                for idx in combo:
+                    val *= float(row[idx])
+                new_row.append(val)
+            result.append(new_row)
         return result
 
-    def fit_transform(self, X) -> np.ndarray:
-        self.fit(X)
+    def fit_transform(self, X):
+        return self.fit(X).transform(X)
+
+
+class Normalizer:
+    def __init__(self, norm='l2'):
+        self.norm = norm
+
+    def fit(self, X):
+        return self
+
+    def transform(self, X):
+        result = []
+        for row in X:
+            row = [float(v) for v in row]
+            if self.norm == 'l2':
+                n = math.sqrt(sum(v**2 for v in row)) or 1.0
+            elif self.norm == 'l1':
+                n = sum(abs(v) for v in row) or 1.0
+            else:
+                n = max(abs(v) for v in row) or 1.0
+            result.append([v / n for v in row])
+        return result
+
+    def fit_transform(self, X):
+        return self.transform(X)
+
+
+class Binarizer:
+    def __init__(self, threshold=0.0):
+        self.threshold = threshold
+
+    def transform(self, X):
+        return [[1.0 if v > self.threshold else 0.0 for v in row] for row in X]
+
+    def fit_transform(self, X):
         return self.transform(X)

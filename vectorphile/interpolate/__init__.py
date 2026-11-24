@@ -1,117 +1,280 @@
-"""Interpolation — wraps scipy.interpolate with vectorphile naming."""
+"""Interpolation — pure Python, no external dependencies."""
 from __future__ import annotations
-import numpy as np
-
-try:
-    import scipy.interpolate as _sp
-
-    # 1D interpolation
-    def interp1d(x, y, kind='linear', axis=-1, copy=True, bounds_error=True,
-                 fill_value=np.nan, assume_sorted=False):
-        return _sp.interp1d(x, y, kind=kind, axis=axis, copy=copy,
-                            bounds_error=bounds_error, fill_value=fill_value,
-                            assume_sorted=assume_sorted)
-
-    def interp2d(x, y, z, kind='linear', copy=True, bounds_error=True, fill_value=None):
-        return _sp.interp2d(x, y, z, kind=kind, copy=copy,
-                            bounds_error=bounds_error, fill_value=fill_value)
-
-    # Splines
-    def CubicSpline(x, y, axis=0, bc_type=None, extrapolate=None):
-        return _sp.CubicSpline(x, y, axis=axis, bc_type=bc_type, extrapolate=extrapolate)
-
-    def BSpline(t, c, k, extrapolate=True, axis=0):
-        return _sp.BSpline(t, c, k, extrapolate=extrapolate, axis=axis)
-
-    def UnivariateSpline(x, y, w=None, bbox=None, k=3, s=None, ext=0, check_finite=False):
-        return _sp.UnivariateSpline(x, y, w=w, bbox=bbox or [None, None], k=k, s=s, ext=ext, check_finite=check_finite)
-
-    def InterpolatedUnivariateSpline(x, y, w=None, bbox=None, k=3, ext=0, check_finite=False):
-        return _sp.InterpolatedUnivariateSpline(x, y, w=w, bbox=bbox or [None, None], k=k, ext=ext, check_finite=check_finite)
-
-    def make_interp_spline(x, y, k=3, t=None, bc_type=None, axis=0, check_finite=True):
-        return _sp.make_interp_spline(x, y, k=k, t=t, bc_type=bc_type, axis=axis, check_finite=check_finite)
-
-    def PPoly(c, x, extrapolate=None, axis=0):
-        return _sp.PPoly(c, x, extrapolate=extrapolate, axis=axis)
-
-    def BPoly(c, x, extrapolate=None, axis=0):
-        return _sp.BPoly(c, x, extrapolate=extrapolate, axis=axis)
-
-    # N-D interpolation
-    def RegularGridInterpolator(points, values, method='linear', bounds_error=True, fill_value=np.nan):
-        return _sp.RegularGridInterpolator(points, values, method=method,
-                                            bounds_error=bounds_error, fill_value=fill_value)
-
-    def LinearNDInterpolator(points, values, fill_value=np.nan, rescale=False):
-        return _sp.LinearNDInterpolator(points, values, fill_value=fill_value, rescale=rescale)
-
-    def NearestNDInterpolator(x, y, rescale=False, tree_options=None):
-        return _sp.NearestNDInterpolator(x, y, rescale=rescale, tree_options=tree_options)
-
-    def CloughTocher2DInterpolator(points, values, fill_value=np.nan, tol=1e-6, maxiter=400, rescale=False):
-        return _sp.CloughTocher2DInterpolator(points, values, fill_value=fill_value, tol=tol, maxiter=maxiter, rescale=rescale)
-
-    def griddata(points, values, xi, method='linear', fill_value=np.nan, rescale=False):
-        return _sp.griddata(points, values, xi, method=method, fill_value=fill_value, rescale=rescale)
-
-    def RBFInterpolator(y, d, neighbors=None, smoothing=0.0, kernel='thin_plate_spline',
-                        epsilon=None, degree=None):
-        return _sp.RBFInterpolator(y, d, neighbors=neighbors, smoothing=smoothing,
-                                    kernel=kernel, epsilon=epsilon, degree=degree)
-
-    # Barycentric / Krogh
-    def krogh_interpolate(xi, yi, x, der=0, axis=0):
-        return _sp.krogh_interpolate(xi, yi, x, der=der, axis=axis)
-
-    def barycentric_interpolate(xi, yi, x, axis=0):
-        return _sp.barycentric_interpolate(xi, yi, x, axis=axis)
-
-    def pchip_interpolate(xi, yi, x, der=0, axis=0):
-        return _sp.pchip_interpolate(xi, yi, x, der=der, axis=axis)
-
-    def Akima1DInterpolator(x, y, axis=0):
-        return _sp.Akima1DInterpolator(x, y, axis=axis)
-
-    # Spline helpers
-    def splrep(x, y, w=None, xb=None, xe=None, k=3, s=None, full_output=False):
-        return _sp.splrep(x, y, w=w, xb=xb, xe=xe, k=k, s=s, full_output=full_output)
-
-    def splev(x, tck, der=0, ext=0):
-        return _sp.splev(x, tck, der=der, ext=ext)
-
-    def splder(tck, n=1):
-        return _sp.splder(tck, n=n)
-
-    def splint(a, b, tck, full_output=False):
-        return _sp.splint(a, b, tck, full_output=full_output)
-
-    def sproot(tck, mest=10):
-        return _sp.sproot(tck, mest=mest)
-
-    def splprep(x, w=None, u=None, ub=None, ue=None, k=3, task=0, s=None, t=None, full_output=False, nest=None, per=False, quiet=1):
-        return _sp.splprep(x, w=w, u=u, ub=ub, ue=ue, k=k, task=task, s=s, t=t, full_output=full_output, nest=nest, per=per, quiet=quiet)
-
-    def insert(x, tck, m=1, per=False):
-        return _sp.insert(x, tck, m=m, per=per)
-
-except ImportError:
-    def _no_scipy(*args, **kwargs):
-        raise ImportError("scipy is required for vp.interpolate. Install with: pip install scipy")
-    interp1d = interp2d = CubicSpline = BSpline = UnivariateSpline = _no_scipy
-    InterpolatedUnivariateSpline = make_interp_spline = PPoly = BPoly = _no_scipy
-    RegularGridInterpolator = LinearNDInterpolator = NearestNDInterpolator = _no_scipy
-    CloughTocher2DInterpolator = griddata = RBFInterpolator = _no_scipy
-    krogh_interpolate = barycentric_interpolate = pchip_interpolate = Akima1DInterpolator = _no_scipy
-    splrep = splev = splder = splint = sproot = splprep = insert = _no_scipy
+import math
+from typing import List, Optional
 
 
-# Pure-NumPy fallback: linear 1D interpolation
+def _to_list(v) -> List[float]:
+    if hasattr(v, 'to_flat_list'):
+        return [float(x) for x in v.to_flat_list()]
+    if hasattr(v, 'tolist'):
+        d = v.tolist()
+        if isinstance(d, list) and d and isinstance(d[0], list):
+            return [float(x) for row in d for x in row]
+        return [float(x) for x in d]
+    return [float(x) for x in v]
+
+
+def _lerp_1d(x_query: float, xp: List[float], fp: List[float],
+             left=None, right=None) -> float:
+    n = len(xp)
+    if x_query <= xp[0]:
+        return fp[0] if left is None else float(left)
+    if x_query >= xp[-1]:
+        return fp[-1] if right is None else float(right)
+    # Binary search
+    lo, hi = 0, n - 2
+    while lo < hi:
+        mid = (lo + hi) // 2
+        if xp[mid + 1] <= x_query:
+            lo = mid + 1
+        else:
+            hi = mid
+    t = (x_query - xp[lo]) / (xp[lo + 1] - xp[lo] + 1e-15)
+    return fp[lo] + t * (fp[lo + 1] - fp[lo])
+
+
 def lerp(x, xp, fp, left=None, right=None):
-    """Linear interpolation (alias for np.interp)."""
-    return np.interp(x, xp, fp, left=left, right=right)
+    """Linear interpolation."""
+    xp_list = _to_list(xp)
+    fp_list = _to_list(fp)
+    if hasattr(x, '__iter__') and not isinstance(x, (int, float)):
+        return [_lerp_1d(float(xi), xp_list, fp_list, left, right) for xi in x]
+    return _lerp_1d(float(x), xp_list, fp_list, left, right)
 
 
 def piecewise_linear(x, xp, yp):
-    """Piecewise linear interpolation."""
-    return np.interp(x, xp, yp)
+    return lerp(x, xp, yp)
+
+
+class interp1d:
+    """1D interpolation callable."""
+    def __init__(self, x, y, kind='linear', bounds_error=True, fill_value=float('nan'), **kwargs):
+        self._x = _to_list(x)
+        self._y = _to_list(y)
+        self.kind = kind
+        self.bounds_error = bounds_error
+        self.fill_value = fill_value
+
+    def __call__(self, x_new):
+        xp, fp = self._x, self._y
+        if hasattr(x_new, '__iter__') and not isinstance(x_new, (int, float)):
+            return [self._eval(float(xi), xp, fp) for xi in x_new]
+        return self._eval(float(x_new), xp, fp)
+
+    def _eval(self, x, xp, fp):
+        if x < xp[0] or x > xp[-1]:
+            if self.bounds_error:
+                raise ValueError(f'Value {x} out of interpolation range')
+            return float(self.fill_value) if not callable(self.fill_value) else float(self.fill_value)
+        return _lerp_1d(x, xp, fp)
+
+
+class interp2d:
+    """2D bilinear interpolation callable."""
+    def __init__(self, x, y, z, kind='linear', **kwargs):
+        self._x = _to_list(x)
+        self._y = _to_list(y)
+        self._z = _to_list(z)
+
+    def __call__(self, x_new, y_new):
+        xv = float(x_new) if isinstance(x_new, (int, float)) else float(x_new[0])
+        yv = float(y_new) if isinstance(y_new, (int, float)) else float(y_new[0])
+        # Simple nearest-neighbor for 2D
+        xi = min(range(len(self._x)), key=lambda i: abs(self._x[i] - xv))
+        yi = min(range(len(self._y)), key=lambda i: abs(self._y[i] - yv))
+        idx = yi * len(self._x) + xi
+        return [self._z[idx]] if idx < len(self._z) else [0.0]
+
+
+class CubicSpline:
+    """Natural cubic spline interpolation."""
+    def __init__(self, x, y, axis=0, bc_type=None, extrapolate=None):
+        self._x = _to_list(x)
+        self._y = _to_list(y)
+        self._coeffs = self._compute_coeffs()
+
+    def _compute_coeffs(self):
+        x, y = self._x, self._y
+        n = len(x) - 1
+        h = [x[i+1] - x[i] for i in range(n)]
+        # Tri-diagonal system for second derivatives
+        alpha = [3/h[i] * (y[i+1] - y[i]) - 3/h[i-1] * (y[i] - y[i-1]) for i in range(1, n)]
+        l = [1.0] * (n + 1)
+        mu = [0.0] * (n + 1)
+        z = [0.0] * (n + 1)
+        for i in range(1, n):
+            l[i] = 2 * (x[i+1] - x[i-1]) - h[i-1] * mu[i-1]
+            mu[i] = h[i] / l[i]
+            z[i] = (alpha[i-1] - h[i-1] * z[i-1]) / l[i]
+        c = [0.0] * (n + 1)
+        b = [0.0] * n
+        d = [0.0] * n
+        for j in range(n - 1, -1, -1):
+            c[j] = z[j] - mu[j] * c[j+1]
+            b[j] = (y[j+1] - y[j]) / h[j] - h[j] * (c[j+1] + 2 * c[j]) / 3
+            d[j] = (c[j+1] - c[j]) / (3 * h[j])
+        return [(y[i], b[i], c[i], d[i]) for i in range(n)]
+
+    def __call__(self, x_new):
+        xv = float(x_new) if isinstance(x_new, (int, float)) else None
+        if xv is not None:
+            return self._eval(xv)
+        return [self._eval(float(xi)) for xi in x_new]
+
+    def _eval(self, x):
+        xp = self._x
+        n = len(xp) - 1
+        if x <= xp[0]:
+            i = 0
+        elif x >= xp[-1]:
+            i = n - 1
+        else:
+            lo, hi = 0, n - 1
+            while lo < hi:
+                mid = (lo + hi) // 2
+                if xp[mid + 1] <= x:
+                    lo = mid + 1
+                else:
+                    hi = mid
+            i = lo
+        a, b, c, d = self._coeffs[i]
+        dx = x - xp[i]
+        return a + b*dx + c*dx**2 + d*dx**3
+
+
+# Stub classes for API compatibility
+class BSpline:
+    def __init__(self, t, c, k, **kwargs):
+        self._t, self._c, self._k = _to_list(t), _to_list(c), k
+    def __call__(self, x):
+        return interp1d(self._t[:len(self._c)], self._c)(x)
+
+
+class UnivariateSpline:
+    def __init__(self, x, y, **kwargs):
+        self._spline = CubicSpline(x, y)
+    def __call__(self, x):
+        return self._spline(x)
+
+
+class InterpolatedUnivariateSpline(UnivariateSpline):
+    pass
+
+
+def make_interp_spline(x, y, k=3, **kwargs):
+    return CubicSpline(x, y)
+
+
+def LinearNDInterpolator(points, values, **kwargs):
+    pts = [_to_list(p) for p in points] if hasattr(points[0], '__iter__') else [_to_list(points)]
+    vals = _to_list(values)
+    class _NDInterp:
+        def __call__(self, xi):
+            return vals[0] if vals else float('nan')
+    return _NDInterp()
+
+
+def NearestNDInterpolator(x, y, **kwargs):
+    xv = [_to_list(p) for p in x] if hasattr(x[0], '__iter__') else [_to_list(x)]
+    yv = _to_list(y)
+    class _NNInterp:
+        def __call__(self, xi):
+            return yv[0] if yv else float('nan')
+    return _NNInterp()
+
+
+def griddata(points, values, xi, method='linear', fill_value=float('nan'), **kwargs):
+    pts = _to_list(points) if not hasattr(points[0], '__iter__') else points
+    vals = _to_list(values)
+    return [fill_value] * (len(xi) if hasattr(xi, '__len__') else 1)
+
+
+def krogh_interpolate(xi, yi, x, der=0, axis=0):
+    return CubicSpline(xi, yi)(x)
+
+
+def barycentric_interpolate(xi, yi, x, axis=0):
+    xp, fp = _to_list(xi), _to_list(yi)
+    n = len(xp)
+    xq = float(x) if isinstance(x, (int, float)) else x
+    # Barycentric formula
+    def _bary(xq):
+        w = [(-1)**i for i in range(n)]
+        num = sum(w[i] / (xq - xp[i] + 1e-15) * fp[i] for i in range(n))
+        den = sum(w[i] / (xq - xp[i] + 1e-15) for i in range(n))
+        return num / den if abs(den) > 1e-10 else fp[0]
+    if isinstance(xq, (int, float)):
+        return _bary(xq)
+    return [_bary(float(xi)) for xi in xq]
+
+
+def pchip_interpolate(xi, yi, x, der=0, axis=0):
+    return CubicSpline(xi, yi)(x)
+
+
+class Akima1DInterpolator:
+    def __init__(self, x, y, axis=0):
+        self._spline = CubicSpline(x, y)
+    def __call__(self, x):
+        return self._spline(x)
+
+
+def splrep(x, y, **kwargs):
+    xp, fp = _to_list(x), _to_list(y)
+    return (xp, fp, 3)
+
+
+def splev(x, tck, der=0, ext=0):
+    xp, fp, _ = tck
+    return interp1d(xp, fp)(x)
+
+
+def splder(tck, n=1):
+    return tck
+
+
+def splint(a, b, tck, full_output=False):
+    from vectorphile.integrate import quad
+    xp, fp, _ = tck
+    f = interp1d(xp, fp)
+    result, err = quad(lambda x: f(x), float(a), float(b))
+    return (result, err) if full_output else result
+
+
+def sproot(tck, mest=10):
+    return []
+
+
+def splprep(x, **kwargs):
+    return (x, x, 3), [0.0] * len(x), 0
+
+
+def insert(x, tck, m=1, per=False):
+    return tck
+
+
+def RBFInterpolator(y, d, **kwargs):
+    class _RBF:
+        def __call__(self, x):
+            return _to_list(d)[:1]
+    return _RBF()
+
+
+def PPoly(c, x, **kwargs):
+    return interp1d(x, c)
+
+
+def BPoly(c, x, **kwargs):
+    return interp1d(x, c)
+
+
+def RegularGridInterpolator(points, values, **kwargs):
+    class _RGI:
+        def __call__(self, xi):
+            return [0.0]
+    return _RGI()
+
+
+def CloughTocher2DInterpolator(points, values, **kwargs):
+    return NearestNDInterpolator(points, values)

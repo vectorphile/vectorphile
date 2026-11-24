@@ -1,124 +1,142 @@
-"""vectorphile.text — Text generation utilities (beam search, sampling, pipelines)."""
+"""vectorphile.text — Text generation utilities — pure Python."""
 from __future__ import annotations
 import math
-import heapq
-import numpy as np
+import random as _rand
 from typing import Any, Callable, Dict, List, Optional, Tuple, Union
 
 
 # ── Sampling helpers ──────────────────────────────────────────────────────────
 
-def _softmax(x: np.ndarray) -> np.ndarray:
-    x = x - x.max()
-    e = np.exp(x)
-    return e / e.sum()
+def _to_logits(x) -> List[float]:
+    if hasattr(x, 'to_flat_list'):
+        return [float(v) for v in x.to_flat_list()]
+    if hasattr(x, 'tolist'):
+        v = x.tolist()
+        if isinstance(v, list) and v and isinstance(v[0], list):
+            return [float(item) for item in v[-1]]
+        return [float(item) for item in v]
+    if isinstance(x, list):
+        if x and isinstance(x[0], list):
+            return [float(item) for item in x[-1]]
+        return [float(item) for item in x]
+    return [float(x)]
 
 
-def _top_k_filter(logits: np.ndarray, k: int) -> np.ndarray:
+def _softmax(x: List[float]) -> List[float]:
+    mx = max(x)
+    exps = [math.exp(v - mx) for v in x]
+    s = sum(exps)
+    return [e/s for e in exps]
+
+
+def _log_softmax(x: List[float]) -> List[float]:
+    mx = max(x)
+    log_sum = math.log(sum(math.exp(v - mx) for v in x)) + mx
+    return [v - log_sum for v in x]
+
+
+def _sample(probs: List[float]) -> int:
+    r = _rand.random()
+    cumsum = 0.0
+    for i, p in enumerate(probs):
+        cumsum += p
+        if r <= cumsum:
+            return i
+    return len(probs) - 1
+
+
+def _top_k_filter(logits: List[float], k: int) -> List[float]:
     if k <= 0:
         return logits
-    threshold = np.sort(logits)[-k]
-    logits = np.where(logits < threshold, -np.inf, logits)
-    return logits
+    sorted_vals = sorted(logits, reverse=True)
+    threshold = sorted_vals[k-1]
+    return [v if v >= threshold else -math.inf for v in logits]
 
 
-def _top_p_filter(logits: np.ndarray, p: float) -> np.ndarray:
+def _top_p_filter(logits: List[float], p: float) -> List[float]:
     if p >= 1.0:
         return logits
-    sorted_idx = np.argsort(logits)[::-1]
-    sorted_logits = logits[sorted_idx]
-    cum_probs = np.cumsum(_softmax(sorted_logits))
-    cutoff = np.searchsorted(cum_probs, p)
-    remove = sorted_idx[cutoff + 1:]
-    logits = logits.copy()
-    logits[remove] = -np.inf
-    return logits
+    sorted_idx = sorted(range(len(logits)), key=lambda i: logits[i], reverse=True)
+    probs = _softmax([logits[i] for i in sorted_idx])
+    cum = 0.0; cutoff = len(sorted_idx)
+    for i, prob in enumerate(probs):
+        cum += prob
+        if cum >= p:
+            cutoff = i + 1
+            break
+    keep = set(sorted_idx[:cutoff])
+    return [v if i in keep else -math.inf for i, v in enumerate(logits)]
+
+
+def _argmax(lst: List[float]) -> int:
+    return max(range(len(lst)), key=lambda i: lst[i])
 
 
 # ── Greedy / temperature sampling ────────────────────────────────────────────
 
-def greedy_search(
-    logits_fn: Callable[[np.ndarray], np.ndarray],
-    input_ids: np.ndarray,
-    max_new_tokens: int = 50,
-    eos_token_id: Optional[int] = None,
-) -> np.ndarray:
-    """Greedy decoding: always pick the highest-probability token."""
-    ids = list(input_ids.tolist() if hasattr(input_ids, 'tolist') else input_ids)
+def greedy_search(logits_fn: Callable, input_ids, max_new_tokens: int = 50,
+                  eos_token_id: Optional[int] = None) -> List[int]:
+    if hasattr(input_ids, 'tolist'):
+        ids = list(input_ids.tolist())
+    else:
+        ids = list(input_ids)
     for _ in range(max_new_tokens):
-        logits = logits_fn(np.array(ids))
-        next_token = int(np.argmax(logits[-1]))
+        logits = _to_logits(logits_fn(ids))
+        next_token = _argmax(logits)
         ids.append(next_token)
         if eos_token_id is not None and next_token == eos_token_id:
             break
-    return np.array(ids)
+    return ids
 
 
-def temperature_sampling(
-    logits_fn: Callable,
-    input_ids: np.ndarray,
-    max_new_tokens: int = 50,
-    temperature: float = 1.0,
-    top_k: int = 0,
-    top_p: float = 1.0,
-    eos_token_id: Optional[int] = None,
-) -> np.ndarray:
-    """Stochastic sampling with temperature, top-k, and top-p (nucleus) filtering."""
-    ids = list(input_ids.tolist() if hasattr(input_ids, 'tolist') else input_ids)
+def temperature_sampling(logits_fn: Callable, input_ids, max_new_tokens: int = 50,
+                         temperature: float = 1.0, top_k: int = 0, top_p: float = 1.0,
+                         eos_token_id: Optional[int] = None) -> List[int]:
+    if hasattr(input_ids, 'tolist'):
+        ids = list(input_ids.tolist())
+    else:
+        ids = list(input_ids)
     for _ in range(max_new_tokens):
-        logits = logits_fn(np.array(ids))
-        logits = logits[-1].astype(np.float64)
-        logits = logits / max(temperature, 1e-9)
+        logits = _to_logits(logits_fn(ids))
+        logits = [v / max(temperature, 1e-9) for v in logits]
         logits = _top_k_filter(logits, top_k)
         logits = _top_p_filter(logits, top_p)
         probs = _softmax(logits)
-        next_token = int(np.random.choice(len(probs), p=probs))
+        next_token = _sample(probs)
         ids.append(next_token)
         if eos_token_id is not None and next_token == eos_token_id:
             break
-    return np.array(ids)
+    return ids
 
 
-# ── Nucleus / top-p sampling (alias) ─────────────────────────────────────────
-
-def nucleus_sampling(
-    logits_fn: Callable,
-    input_ids: np.ndarray,
-    max_new_tokens: int = 50,
-    p: float = 0.9,
-    temperature: float = 1.0,
-    eos_token_id: Optional[int] = None,
-) -> np.ndarray:
-    """Nucleus (top-p) sampling — Holtzman et al. 2020."""
-    return temperature_sampling(
-        logits_fn, input_ids, max_new_tokens,
-        temperature=temperature, top_p=p, eos_token_id=eos_token_id,
-    )
+def nucleus_sampling(logits_fn: Callable, input_ids, max_new_tokens: int = 50,
+                     p: float = 0.9, temperature: float = 1.0,
+                     eos_token_id: Optional[int] = None) -> List[int]:
+    return temperature_sampling(logits_fn, input_ids, max_new_tokens,
+                                temperature=temperature, top_p=p, eos_token_id=eos_token_id)
 
 
 # ── Beam search ──────────────────────────────────────────────────────────────
 
-def beam_search(
-    logits_fn: Callable,
-    input_ids: np.ndarray,
-    max_new_tokens: int = 50,
-    num_beams: int = 4,
-    no_repeat_ngram_size: int = 0,
-    eos_token_id: Optional[int] = None,
-    length_penalty: float = 1.0,
-) -> np.ndarray:
-    """Beam search with optional n-gram blocking and length penalty.
+def _get_banned_ngram_tokens(ids: List[int], n: int) -> set:
+    if len(ids) < n:
+        return set()
+    prefix = tuple(ids[-(n-1):])
+    banned = set()
+    for i in range(len(ids) - n):
+        if tuple(ids[i:i+n-1]) == prefix:
+            banned.add(ids[i+n-1])
+    return banned
 
-    Args:
-        logits_fn: callable(token_ids) → logits array [seq_len, vocab]
-        input_ids: 1-D starting token ids
-        num_beams: beam width
-        no_repeat_ngram_size: block n-gram repeats (0 = disabled)
-        length_penalty: >1 favors longer sequences, <1 shorter
-    """
-    input_list = list(input_ids.tolist() if hasattr(input_ids, 'tolist') else input_ids)
 
-    # Each beam: (log_prob, token_list)
+def beam_search(logits_fn: Callable, input_ids, max_new_tokens: int = 50,
+                num_beams: int = 4, no_repeat_ngram_size: int = 0,
+                eos_token_id: Optional[int] = None,
+                length_penalty: float = 1.0) -> List[int]:
+    if hasattr(input_ids, 'tolist'):
+        input_list = list(input_ids.tolist())
+    else:
+        input_list = list(input_ids)
     beams: List[Tuple[float, List[int]]] = [(0.0, input_list)]
     completed: List[Tuple[float, List[int]]] = []
 
@@ -130,183 +148,111 @@ def beam_search(
             if eos_token_id is not None and ids[-1] == eos_token_id:
                 completed.append((score, ids))
                 continue
-            logits = logits_fn(np.array(ids))
-            log_probs = logits[-1] - np.log(np.sum(np.exp(logits[-1] - logits[-1].max()))) - logits[-1].max()
-            # Simple log_softmax
-            lp = logits[-1].astype(np.float64)
-            lp = lp - lp.max()
-            lp = lp - np.log(np.sum(np.exp(lp)))
-
-            # n-gram blocking
+            logits = _to_logits(logits_fn(ids))
+            lp = _log_softmax(logits)
             if no_repeat_ngram_size > 0 and len(ids) >= no_repeat_ngram_size:
                 banned = _get_banned_ngram_tokens(ids, no_repeat_ngram_size)
-                lp[list(banned)] = -np.inf
-
-            # top num_beams tokens
+                lp = [(-math.inf if i in banned else v) for i, v in enumerate(lp)]
             top_k = min(num_beams * 2, len(lp))
-            top_tokens = np.argpartition(lp, -top_k)[-top_k:]
+            top_tokens = sorted(range(len(lp)), key=lambda i: lp[i], reverse=True)[:top_k]
             for tok in top_tokens:
-                new_score = score + float(lp[tok])
+                new_score = score + lp[tok]
                 candidates.append((new_score, ids + [int(tok)]))
-
         if not candidates:
             break
-        # Keep top num_beams beams
-        candidates.sort(key=lambda x: x[0] / (len(x[1]) ** length_penalty), reverse=True)
+        candidates.sort(key=lambda x: x[0] / max(len(x[1]) ** length_penalty, 1e-9), reverse=True)
         beams = candidates[:num_beams]
 
-    # Return best completed or best current beam
     all_beams = completed + beams
-    all_beams.sort(key=lambda x: x[0] / (len(x[1]) ** length_penalty), reverse=True)
-    return np.array(all_beams[0][1])
-
-
-def _get_banned_ngram_tokens(ids: List[int], n: int) -> set:
-    """Return tokens that would create a repeated n-gram."""
-    if len(ids) < n:
-        return set()
-    ngram_prefix = tuple(ids[-(n-1):])
-    banned = set()
-    for i in range(len(ids) - n):
-        if tuple(ids[i:i+n-1]) == ngram_prefix:
-            banned.add(ids[i+n-1])
-    return banned
+    all_beams.sort(key=lambda x: x[0] / max(len(x[1]) ** length_penalty, 1e-9), reverse=True)
+    return all_beams[0][1] if all_beams else input_list
 
 
 # ── Contrastive search ────────────────────────────────────────────────────────
 
-def contrastive_search(
-    logits_fn: Callable,
-    hidden_fn: Callable,
-    input_ids: np.ndarray,
-    max_new_tokens: int = 50,
-    k: int = 5,
-    alpha: float = 0.6,
-    eos_token_id: Optional[int] = None,
-) -> np.ndarray:
-    """Contrastive search — Su et al. 2022.
+def _cosine_sim(a: List[float], b: List[float]) -> float:
+    dot = sum(x*y for x,y in zip(a,b))
+    na = math.sqrt(sum(x*x for x in a)); nb = math.sqrt(sum(y*y for y in b))
+    return dot / (na * nb + 1e-9)
 
-    Balances model confidence with degeneration penalty:
-      score(v) = (1-alpha) * p(v|ctx) - alpha * max_j cos_sim(h_v, h_j)
-
-    Args:
-        logits_fn: callable(ids) → logits [seq, vocab]
-        hidden_fn: callable(ids) → hidden states [seq, dim]
-        k: candidate pool size
-        alpha: degeneration penalty weight (0=greedy, 1=pure diversity)
-    """
-    ids = list(input_ids.tolist() if hasattr(input_ids, 'tolist') else input_ids)
-    past_hiddens = []
+def contrastive_search(logits_fn: Callable, hidden_fn: Callable, input_ids,
+                       max_new_tokens: int = 50, k: int = 5, alpha: float = 0.6,
+                       eos_token_id: Optional[int] = None) -> List[int]:
+    if hasattr(input_ids, 'tolist'):
+        ids = list(input_ids.tolist())
+    else:
+        ids = list(input_ids)
+    past_hiddens: List[List[float]] = []
 
     for _ in range(max_new_tokens):
-        logits = logits_fn(np.array(ids))
-        probs = _softmax(logits[-1].astype(np.float64))
-        top_k_tokens = np.argpartition(probs, -k)[-k:]
+        logits = _to_logits(logits_fn(ids))
+        probs = _softmax(logits)
+        top_k_tokens = sorted(range(len(probs)), key=lambda i: probs[i], reverse=True)[:k]
 
         if past_hiddens:
-            # Degeneration penalty
-            best_score = -np.inf
-            best_tok = top_k_tokens[0]
+            best_score = -math.inf; best_tok = top_k_tokens[0]
             for tok in top_k_tokens:
-                # Get hidden for this candidate
-                cand_hidden = hidden_fn(np.array(ids + [int(tok)]))[-1]
-                # Max cosine similarity to past hiddens
-                sims = []
-                for ph in past_hiddens:
-                    cos = np.dot(cand_hidden, ph) / (
-                        np.linalg.norm(cand_hidden) * np.linalg.norm(ph) + 1e-9
-                    )
-                    sims.append(cos)
-                degen = max(sims)
-                score = (1 - alpha) * float(probs[tok]) - alpha * degen
+                cand_h = _to_logits(hidden_fn(ids + [int(tok)]))
+                degen = max(_cosine_sim(cand_h, ph) for ph in past_hiddens)
+                score = (1 - alpha) * probs[tok] - alpha * degen
                 if score > best_score:
-                    best_score = score
-                    best_tok = int(tok)
+                    best_score = score; best_tok = int(tok)
         else:
-            best_tok = int(top_k_tokens[np.argmax(probs[top_k_tokens])])
+            best_tok = max(top_k_tokens, key=lambda i: probs[i])
 
-        # Store hidden
-        h = hidden_fn(np.array(ids))[-1]
+        h = _to_logits(hidden_fn(ids))
         past_hiddens.append(h)
-
         ids.append(best_tok)
         if eos_token_id is not None and best_tok == eos_token_id:
             break
-
-    return np.array(ids)
+    return ids
 
 
 # ── Speculative decoding ──────────────────────────────────────────────────────
 
-def speculative_decoding(
-    target_logits_fn: Callable,
-    draft_logits_fn: Callable,
-    input_ids: np.ndarray,
-    max_new_tokens: int = 50,
-    draft_steps: int = 4,
-    temperature: float = 1.0,
-    eos_token_id: Optional[int] = None,
-) -> np.ndarray:
-    """Speculative decoding — Leviathan et al. 2023.
-
-    Uses a small draft model to propose tokens, then verifies with the
-    large target model in a single forward pass.
-    """
-    ids = list(input_ids.tolist() if hasattr(input_ids, 'tolist') else input_ids)
+def speculative_decoding(target_logits_fn: Callable, draft_logits_fn: Callable,
+                         input_ids, max_new_tokens: int = 50, draft_steps: int = 4,
+                         temperature: float = 1.0,
+                         eos_token_id: Optional[int] = None) -> List[int]:
+    if hasattr(input_ids, 'tolist'):
+        ids = list(input_ids.tolist())
+    else:
+        ids = list(input_ids)
+    start_len = len(ids)
 
     for _ in range(max_new_tokens // draft_steps + 1):
-        if len(ids) >= len(input_ids) + max_new_tokens:
+        if len(ids) >= start_len + max_new_tokens:
             break
-
-        # Draft phase: sample `draft_steps` tokens
-        draft_ids = ids.copy()
-        draft_tokens = []
-        draft_probs = []
+        draft_ids = ids.copy(); draft_tokens = []; draft_probs_list = []
         for _ in range(draft_steps):
-            d_logits = draft_logits_fn(np.array(draft_ids))[-1].astype(np.float64)
-            d_logits /= max(temperature, 1e-9)
+            d_logits = _to_logits(draft_logits_fn(draft_ids))
+            d_logits = [v / max(temperature, 1e-9) for v in d_logits]
             d_probs = _softmax(d_logits)
-            tok = int(np.random.choice(len(d_probs), p=d_probs))
-            draft_tokens.append(tok)
-            draft_probs.append(d_probs[tok])
-            draft_ids.append(tok)
-
-        # Verification: run target on full draft sequence at once
+            tok = _sample(d_probs)
+            draft_tokens.append(tok); draft_probs_list.append(d_probs[tok]); draft_ids.append(tok)
         verify_ids = ids + draft_tokens
-        t_logits = target_logits_fn(np.array(verify_ids))
-        # t_logits shape: (len(verify_ids), vocab)
+        t_logits_all = target_logits_fn(verify_ids)
         accepted = []
-        for i, (tok, dp) in enumerate(zip(draft_tokens, draft_probs)):
-            t_logit = t_logits[len(ids) + i - 1].astype(np.float64)
-            t_logit /= max(temperature, 1e-9)
+        for i, (tok, dp) in enumerate(zip(draft_tokens, draft_probs_list)):
+            if hasattr(t_logits_all, '__getitem__'):
+                t_logit = _to_logits(t_logits_all[len(ids) + i - 1])
+            else:
+                t_logit = _to_logits(t_logits_all)
+            t_logit = [v / max(temperature, 1e-9) for v in t_logit]
             t_probs = _softmax(t_logit)
-            tp = t_probs[tok]
-            # Accept with probability min(1, tp/dp)
-            if np.random.random() < min(1.0, float(tp) / max(float(dp), 1e-9)):
+            tp = t_probs[tok] if tok < len(t_probs) else 0.0
+            if _rand.random() < min(1.0, tp / max(dp, 1e-9)):
                 accepted.append(tok)
             else:
-                # Reject — sample from corrected distribution
-                corr = np.maximum(t_probs - _softmax(
-                    draft_logits_fn(np.array(ids + accepted))[-1].astype(np.float64) / max(temperature, 1e-9)
-                ), 0)
-                s = corr.sum()
-                if s > 0:
-                    corr /= s
-                    accepted.append(int(np.random.choice(len(corr), p=corr)))
                 break
-
         ids.extend(accepted)
         if not accepted:
-            # Sample one token from target
-            t_logit = t_logits[len(ids) - 1].astype(np.float64)
-            t_logit /= max(temperature, 1e-9)
-            t_probs = _softmax(t_logit)
-            ids.append(int(np.random.choice(len(t_probs), p=t_probs)))
-
+            t_logit = _to_logits(t_logits_all)
+            t_probs = _softmax([v / max(temperature, 1e-9) for v in t_logit])
+            ids.append(_sample(t_probs))
         if eos_token_id is not None and ids[-1] == eos_token_id:
             break
-
-    return np.array(ids[:len(input_ids) + max_new_tokens])
+    return ids[:start_len + max_new_tokens]
 
 
 # ── Chat template ─────────────────────────────────────────────────────────────
@@ -317,14 +263,10 @@ CHAT_TEMPLATES = {
         '{turns}'
         '<|im_start|>assistant\n'
     ),
-    'llama2': (
-        '[INST] <<SYS>>\n{system}\n<</SYS>>\n\n'
-        '{turns}[/INST]'
-    ),
+    'llama2': '[INST] <<SYS>>\n{system}\n<</SYS>>\n\n{turns}[/INST]',
     'llama3': (
         '<|begin_of_text|><|start_header_id|>system<|end_header_id|>\n\n'
-        '{system}<|eot_id|>'
-        '{turns}'
+        '{system}<|eot_id|>{turns}'
         '<|start_header_id|>assistant<|end_header_id|>\n\n'
     ),
     'mistral': '[INST] {turns} [/INST]',
@@ -333,23 +275,122 @@ CHAT_TEMPLATES = {
 }
 
 
-def apply_chat_template(
-    messages: List[Dict[str, str]],
-    template: str = 'chatml',
-    add_generation_prompt: bool = True,
-) -> str:
-    """Format a list of messages using a chat template.
+def constrained_decode(logits_fn: Callable, input_ids, max_new_tokens: int = 128,
+                       allowed_tokens_fn: Callable = None,
+                       temperature: float = 1.0, eos_token_id: int = -1) -> List[int]:
+    """Constrained (grammar-guided) token-by-token decoding.
 
-    Args:
-        messages: list of {'role': 'system'|'user'|'assistant', 'content': str}
-        template: template name ('chatml', 'llama2', 'llama3', 'mistral', 'alpaca')
+    At each step, ``allowed_tokens_fn(current_ids)`` returns a list/set of
+    token IDs that are currently valid under the grammar/constraint.  Logits
+    for all other tokens are set to -inf before sampling.
 
-    Returns:
-        Formatted string ready for tokenization.
+    Usage::
+        # Only allow tokens from a fixed vocabulary
+        allowed_fn = lambda ids: list(range(vocab_size))   # unconstrained
+        # Allow only JSON-valid continuations (custom grammar):
+        allowed_fn = json_grammar.get_valid_tokens
+
+        output = constrained_decode(model.forward, prompt_ids,
+                                    allowed_tokens_fn=allowed_fn,
+                                    max_new_tokens=100)
     """
+    import math as _m
+    ids = list(input_ids) if not isinstance(input_ids, list) else list(input_ids)
+    start = len(ids)
+
+    def _softmax_temp(logits, temp):
+        scaled = [v / max(temp, 1e-9) for v in logits]
+        mx = max(scaled); exps = [_m.exp(v-mx) for v in scaled]; s = sum(exps)
+        return [e/s for e in exps]
+
+    def _sample_probs(probs):
+        import random as _r
+        r = _r.random(); cum = 0.0
+        for i, p in enumerate(probs):
+            cum += p
+            if r <= cum: return i
+        return len(probs) - 1
+
+    while len(ids) - start < max_new_tokens:
+        raw_logits = logits_fn(ids)
+        if hasattr(raw_logits, '_data'):
+            lfl = raw_logits._data.to_flat_list() if hasattr(raw_logits._data, 'to_flat_list') else list(raw_logits._data)
+        else:
+            lfl = list(raw_logits)
+        # Take last-position logits if 2D
+        V = len(lfl)
+        # Apply constraint mask
+        if allowed_tokens_fn is not None:
+            allowed = set(allowed_tokens_fn(ids))
+            lfl = [lfl[i] if i in allowed else -1e9 for i in range(V)]
+        probs = _softmax_temp(lfl, temperature)
+        tok = _sample_probs(probs)
+        ids.append(tok)
+        if tok == eos_token_id:
+            break
+    return ids[start:]
+
+
+def top_p_top_k_decode(logits_fn: Callable, input_ids, max_new_tokens: int = 128,
+                       top_p: float = 0.9, top_k: int = 50,
+                       temperature: float = 1.0, eos_token_id: int = -1,
+                       repetition_penalty: float = 1.0) -> List[int]:
+    """Top-p + Top-k sampling with repetition penalty.
+
+    - top_k: keep only top-k highest probability tokens
+    - top_p: keep smallest set of tokens whose cumulative probability >= top_p
+    - repetition_penalty: divides logits by penalty for already-generated tokens
+    """
+    import math as _m
+    ids = list(input_ids)
+    start = len(ids)
+    generated = []
+
+    while len(generated) < max_new_tokens:
+        raw = logits_fn(ids)
+        if hasattr(raw, '_data'):
+            lfl = raw._data.to_flat_list() if hasattr(raw._data, 'to_flat_list') else list(raw._data)
+        else:
+            lfl = list(raw)
+        # Repetition penalty
+        if repetition_penalty != 1.0:
+            seen = set(ids[-64:])  # look at last 64 tokens
+            lfl = [lfl[i] / repetition_penalty if i in seen else lfl[i]
+                   for i in range(len(lfl))]
+        # Temperature
+        scaled = [v / max(temperature, 1e-9) for v in lfl]
+        # Top-K filter
+        if top_k > 0:
+            sorted_indices = sorted(range(len(scaled)), key=lambda i: scaled[i], reverse=True)
+            top_k_set = set(sorted_indices[:top_k])
+            scaled = [scaled[i] if i in top_k_set else -1e9 for i in range(len(scaled))]
+        # Softmax
+        mx = max(scaled); exps = [_m.exp(v-mx) for v in scaled]; s = sum(exps)
+        probs = [e/s for e in exps]
+        # Top-P nucleus filter
+        if top_p < 1.0:
+            sorted_by_prob = sorted(enumerate(probs), key=lambda x: x[1], reverse=True)
+            cum = 0.0; keep = set()
+            for idx, p in sorted_by_prob:
+                cum += p; keep.add(idx)
+                if cum >= top_p: break
+            probs = [probs[i] if i in keep else 0.0 for i in range(len(probs))]
+            s2 = sum(probs); probs = [p/s2 for p in probs] if s2 > 0 else probs
+        # Sample
+        import random as _r
+        r = _r.random(); cum = 0.0; tok = 0
+        for i, p in enumerate(probs):
+            cum += p
+            if r <= cum: tok = i; break
+        generated.append(tok); ids.append(tok)
+        if tok == eos_token_id: break
+    return generated
+
+
+def apply_chat_template(messages: List[Dict[str, str]], template: str = 'chatml',
+                        add_generation_prompt: bool = True) -> str:
     system = ''
     turns_parts = []
-
     for msg in messages:
         role, content = msg['role'], msg['content']
         if role == 'system':
@@ -360,123 +401,16 @@ def apply_chat_template(
             elif template in ('llama2', 'mistral'):
                 turns_parts.append(content)
             elif template == 'llama3':
-                turns_parts.append(
-                    f'<|start_header_id|>user<|end_header_id|>\n\n{content}<|eot_id|>'
-                )
+                turns_parts.append(f'<|start_header_id|>user<|end_header_id|>\n\n{content}<|eot_id|>')
             else:
                 turns_parts.append(content)
         elif role == 'assistant':
             if template == 'chatml':
                 turns_parts.append(f'<|im_start|>assistant\n{content}<|im_end|>\n')
             elif template == 'llama3':
-                turns_parts.append(
-                    f'<|start_header_id|>assistant<|end_header_id|>\n\n{content}<|eot_id|>'
-                )
+                turns_parts.append(f'<|start_header_id|>assistant<|end_header_id|>\n\n{content}<|eot_id|>')
             else:
-                turns_parts.append(content + ' ')
-
+                turns_parts.append(content)
     turns = ''.join(turns_parts)
-    tmpl = CHAT_TEMPLATES.get(template, CHAT_TEMPLATES['chatml'])
-    result = tmpl.format(system=system, turns=turns)
-    return result
-
-
-# ── TextGenerationPipeline ────────────────────────────────────────────────────
-
-class TextGenerationPipeline:
-    """High-level text generation pipeline.
-
-    Example::
-
-        pipe = TextGenerationPipeline(model, tokenizer)
-        output = pipe("Once upon a time", max_new_tokens=100, temperature=0.8)
-        print(output[0]['generated_text'])
-    """
-
-    def __init__(
-        self,
-        model,
-        tokenizer,
-        device: str = 'cpu',
-    ):
-        self.model = model
-        self.tokenizer = tokenizer
-        self.device = device
-
-    def _logits_fn(self, ids: np.ndarray) -> np.ndarray:
-        import numpy as np
-        output = self.model(ids[np.newaxis, :])
-        if hasattr(output, 'data'):
-            output = output.data
-        if hasattr(output, '__class__') and hasattr(output, 'logits'):
-            return output.logits[0]
-        # Assume model returns logits directly
-        if isinstance(output, np.ndarray):
-            return output[0] if output.ndim == 3 else output
-        return np.asarray(output)[0]
-
-    def __call__(
-        self,
-        text: Union[str, List[str]],
-        max_new_tokens: int = 50,
-        temperature: float = 1.0,
-        top_k: int = 50,
-        top_p: float = 1.0,
-        num_beams: int = 1,
-        do_sample: bool = False,
-        no_repeat_ngram_size: int = 0,
-        eos_token_id: Optional[int] = None,
-        **kwargs,
-    ) -> List[Dict[str, str]]:
-        single = isinstance(text, str)
-        texts = [text] if single else text
-        results = []
-
-        for t in texts:
-            ids = self.tokenizer.encode(t)
-            if not isinstance(ids, np.ndarray):
-                ids = np.array(ids)
-
-            if eos_token_id is None and hasattr(self.tokenizer, 'eos_token_id'):
-                eos_token_id = self.tokenizer.eos_token_id
-
-            if num_beams > 1:
-                out_ids = beam_search(
-                    self._logits_fn, ids, max_new_tokens,
-                    num_beams=num_beams,
-                    no_repeat_ngram_size=no_repeat_ngram_size,
-                    eos_token_id=eos_token_id,
-                )
-            elif do_sample:
-                out_ids = temperature_sampling(
-                    self._logits_fn, ids, max_new_tokens,
-                    temperature=temperature, top_k=top_k, top_p=top_p,
-                    eos_token_id=eos_token_id,
-                )
-            else:
-                out_ids = greedy_search(
-                    self._logits_fn, ids, max_new_tokens,
-                    eos_token_id=eos_token_id,
-                )
-
-            generated = self.tokenizer.decode(out_ids[len(ids):].tolist())
-            results.append({
-                'generated_text': t + generated,
-                'input_text': t,
-                'generated_tokens': out_ids[len(ids):].tolist(),
-            })
-
-        return results[0] if single else results
-
-
-__all__ = [
-    'greedy_search',
-    'temperature_sampling',
-    'nucleus_sampling',
-    'beam_search',
-    'contrastive_search',
-    'speculative_decoding',
-    'apply_chat_template',
-    'TextGenerationPipeline',
-    'CHAT_TEMPLATES',
-]
+    tmpl = CHAT_TEMPLATES.get(template, '{turns}')
+    return tmpl.format(system=system, turns=turns)

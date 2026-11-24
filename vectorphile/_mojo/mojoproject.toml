@@ -1,0 +1,37 @@
+[project]
+name = "vectorphile-kernels"
+version = "0.1.0"
+description = "Mojo-accelerated kernels for vectorphile"
+authors = ["vectorphile contributors"]
+
+[build-system]
+requires = ["mojo>=24.6"]
+
+[tool.mojo]
+optimization-level = 3
+
+# CPU kernels — compiled on all platforms
+[[tool.mojo.targets]]
+name = "vpkernels"
+type = "shared-library"
+sources = [
+    "gemm.mojo",
+    "elementwise.mojo",
+    "reductions.mojo",
+    "random.mojo",
+    "conv.mojo",
+    "fused.mojo",
+    "ndarray.mojo",
+]
+
+# GPU kernels — compiled only when CUDA is available
+[[tool.mojo.targets]]
+name = "vpkernels_gpu"
+type = "shared-library"
+features = ["gpu"]
+sources = [
+    "gpu_device.mojo",
+    "gpu_elementwise.mojo",
+    "gpu_gemm.mojo",
+    "gpu_reductions.mojo",
+]

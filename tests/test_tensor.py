@@ -181,6 +181,76 @@ class TestTensorMath:
         assert np.allclose(c.numpy(), (a @ b).numpy(), atol=1e-4)
 
 
+class TestNewTensorOps:
+    def test_roll_1d(self):
+        t = vp.tensor([1.0, 2.0, 3.0, 4.0, 5.0])
+        r = vp.roll(t, 2)
+        assert list(r._data.to_flat_list()) == [4.0, 5.0, 1.0, 2.0, 3.0]
+
+    def test_flip_1d(self):
+        t = vp.tensor([1.0, 2.0, 3.0])
+        r = vp.flip(t, [0])
+        assert list(r._data.to_flat_list()) == [3.0, 2.0, 1.0]
+
+    def test_diag_1d_to_2d(self):
+        t = vp.tensor([1.0, 2.0, 3.0])
+        d = vp.diag(t)
+        assert d.shape == (3, 3)
+        flat = list(d._data.to_flat_list())
+        assert flat[0] == 1.0  # [0,0]
+        assert flat[4] == 2.0  # [1,1]
+        assert flat[8] == 3.0  # [2,2]
+
+    def test_diag_2d_to_1d(self):
+        t = vp.tensor([[1.0, 0.0], [0.0, 4.0]])
+        d = vp.diag(t)
+        assert list(d._data.to_flat_list()) == [1.0, 4.0]
+
+    def test_trace(self):
+        t = vp.tensor([[1.0, 2.0], [3.0, 4.0]])
+        tr = vp.trace(t)
+        assert abs(float(tr.item()) - 5.0) < 1e-5
+
+    def test_diff_1d(self):
+        t = vp.tensor([1.0, 3.0, 6.0, 10.0])
+        d = vp.diff(t)
+        assert list(d._data.to_flat_list()) == [2.0, 3.0, 4.0]
+
+    def test_meshgrid(self):
+        x = vp.arange(1, 4)
+        y = vp.arange(1, 3)
+        grids = vp.meshgrid(x, y)  # default ij indexing: shapes (nx, ny)
+        assert len(grids) == 2
+        assert grids[0].shape == (3, 2)
+        assert grids[1].shape == (3, 2)
+
+    def test_cdist(self):
+        x1 = vp.tensor([[0.0, 0.0]])
+        x2 = vp.tensor([[3.0, 4.0]])
+        d = vp.cdist(x1, x2)
+        assert abs(list(d._data.to_flat_list())[0] - 5.0) < 1e-4
+
+    def test_new_distributions(self):
+        from vectorphile import random as vpr
+        g = vpr.gamma(2.0, 1.0, size=100)
+        assert g.shape == (100,)
+        b = vpr.beta(2.0, 5.0, size=50)
+        assert b.shape == (50,)
+        flat_b = b._data.to_flat_list()
+        assert all(0 <= v <= 1 for v in flat_b)
+        c = vpr.cauchy(0, 1, size=20)
+        assert c.shape == (20,)
+        la = vpr.laplace(0, 1, size=20)
+        assert la.shape == (20,)
+        gu = vpr.gumbel(0, 1, size=20)
+        assert gu.shape == (20,)
+        w = vpr.weibull(1.0, 1.5, size=20)
+        assert w.shape == (20,)
+        d_dir = vpr.dirichlet([1.0, 2.0, 3.0])
+        flat_d = d_dir._data.to_flat_list()
+        assert abs(sum(flat_d) - 1.0) < 1e-5
+
+
 class TestTensorAutograd:
     def test_backward_add(self):
         x = vp.tensor([1.0, 2.0, 3.0], requires_grad=True)

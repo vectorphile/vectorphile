@@ -14,8 +14,10 @@ class ModuleList(Module):
                 self.append(m)
 
     def append(self, module: Module) -> 'ModuleList':
+        idx = len(self._modules_list)
         self._modules_list.append(module)
-        self._parameters.update({f'_m{len(self._modules_list)-1}_{k}': v
+        self._modules[str(idx)] = module
+        self._parameters.update({f'_m{idx}_{k}': v
                                    for k, v in module._parameters.items()})
         return self
 
@@ -26,9 +28,11 @@ class ModuleList(Module):
 
     def insert(self, index: int, module: Module) -> None:
         self._modules_list.insert(index, module)
-        # Rebuild param keys
+        # Rebuild param and module keys
         self._parameters = {}
+        self._modules = __import__('collections').OrderedDict()
         for i, m in enumerate(self._modules_list):
+            self._modules[str(i)] = m
             self._parameters.update({f'_m{i}_{k}': v for k, v in m._parameters.items()})
 
     def __getitem__(self, idx):
@@ -38,6 +42,7 @@ class ModuleList(Module):
 
     def __setitem__(self, idx, module):
         self._modules_list[idx] = module
+        self._modules[str(idx)] = module
 
     def __len__(self):
         return len(self._modules_list)

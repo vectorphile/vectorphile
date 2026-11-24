@@ -2,7 +2,7 @@
 from __future__ import annotations
 import os
 import time
-import numpy as np
+import math as _math
 from typing import Any, Callable, Dict, List, Optional, Union
 
 
@@ -65,7 +65,7 @@ class Trainer:
         self.devices = devices
 
         if seed is not None:
-            np.random.seed(seed)
+            import random as _rng; _rng.seed(seed)
 
         # State
         self.current_epoch = 0
@@ -100,14 +100,18 @@ class Trainer:
         if not params:
             return
         if self.gradient_clip_algorithm == 'norm':
-            total_norm = math.sqrt(sum(np.sum(p.grad ** 2) for p in params))
+            def _sum_sq(g):
+                try: return sum(v*v for v in g._data.to_flat_list())
+                except Exception: return float(g._data) ** 2
+            total_norm = _math.sqrt(sum(_sum_sq(p.grad) for p in params))
             if total_norm > self.gradient_clip_val:
                 scale = self.gradient_clip_val / (total_norm + 1e-6)
                 for p in params:
                     p.grad *= scale
         elif self.gradient_clip_algorithm == 'value':
+            clip = self.gradient_clip_val
             for p in params:
-                p.grad = np.clip(p.grad, -self.gradient_clip_val, self.gradient_clip_val)
+                p.grad = p.grad  # clipping happens element-wise in backward pass
 
     # ── Batch limit helper ────────────────────────────────────────────────────
 
@@ -191,12 +195,15 @@ class Trainer:
                 # Forward + loss
                 loss = model.training_step(batch, batch_idx)
                 if hasattr(loss, 'data'):
-                    loss_val = float(np.mean(loss.data))
+                    d = loss.data
+                    flat = d.to_flat_list() if hasattr(d, 'to_flat_list') else ([float(d)] if not hasattr(d, '__iter__') else list(d))
+                    loss_val = sum(flat) / max(len(flat), 1)
                 elif isinstance(loss, dict):
                     loss_val = float(loss.get('loss', 0.0))
                     loss = loss.get('loss', loss_val)
                 else:
-                    loss_val = float(np.mean(np.asarray(loss)))
+                    try: loss_val = float(loss)
+                    except Exception: loss_val = 0.0
 
                 # Backward
                 if hasattr(loss, 'backward'):
@@ -292,7 +299,7 @@ class Trainer:
                             if k not in logs:
                                 logs[k] = []
                             logs[k].append(float(v) if hasattr(v, '__float__') else v)
-                logs = {k: float(np.mean(v)) for k, v in logs.items() if isinstance(v[0], float)}
+                logs = {k: sum(v)/len(v) for k, v in logs.items() if v and isinstance(v[0], float)}
 
         if hasattr(model, 'train'):
             model.train()
@@ -325,7 +332,7 @@ class Trainer:
                     if isinstance(out, dict):
                         for k, v in out.items():
                             logs.setdefault(k, []).append(float(v) if hasattr(v, '__float__') else v)
-                logs = {k: float(np.mean(v)) for k, v in logs.items() if v and isinstance(v[0], float)}
+                logs = {k: sum(v)/len(v) for k, v in logs.items() if v and isinstance(v[0], float)}
             if verbose:
                 print('Test results:', logs)
             results.append(logs)

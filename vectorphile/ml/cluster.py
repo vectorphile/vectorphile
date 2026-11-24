@@ -1,59 +1,91 @@
-"""Clustering algorithms."""
-import numpy as np
+"""Clustering algorithms — pure Python."""
+import math
+import random as _random
 from typing import Optional
+from vectorphile.ml._np_compat import to_array as _ta
+
+
+def _dist(a, b):
+    return math.sqrt(sum((x - y) ** 2 for x, y in zip(a, b)))
+
+
+def _mean_col(rows, j):
+    return sum(row[j] for row in rows) / len(rows)
 
 
 class KMeans:
-    def __init__(self, n_clusters=8, max_iter=300, tol=1e-4, n_init=10, random_state=None):
+    def __init__(self, n_clusters=8, max_iter=300, tol=1e-4, random_state=None,
+                 init='k-means++', n_init=10):
         self.n_clusters = n_clusters
         self.max_iter = max_iter
         self.tol = tol
-        self.n_init = n_init
         self.random_state = random_state
-        self.cluster_centers_: Optional[np.ndarray] = None
-        self.labels_: Optional[np.ndarray] = None
-        self.inertia_: float = np.inf
+        self.init = init
+        self.n_init = n_init
 
-    def _run_once(self, X, seed):
-        rng = np.random.RandomState(seed)
-        idx = rng.choice(len(X), self.n_clusters, replace=False)
-        centers = X[idx].copy()
+    def _init_centers(self, X, rng):
+        n, p = len(X), len(X[0])
+        if self.init == 'k-means++':
+            centers = [X[rng.randint(0, n - 1)][:]]
+            for _ in range(1, self.n_clusters):
+                dists = [min(_dist(x, c) ** 2 for c in centers) for x in X]
+                total = sum(dists)
+                r = rng.random() * total
+                cum = 0.0
+                for i, d in enumerate(dists):
+                    cum += d
+                    if cum >= r:
+                        centers.append(X[i][:])
+                        break
+                else:
+                    centers.append(X[rng.randint(0, n - 1)][:])
+        else:
+            centers = [X[i][:] for i in rng.sample(range(n), self.n_clusters)]
+        return centers
+
+    def _run_once(self, X, rng):
+        n, p = len(X), len(X[0])
+        centers = self._init_centers(X, rng)
+        labels = [-1] * n
         for _ in range(self.max_iter):
-            dists = np.linalg.norm(X[:, None] - centers[None], axis=2)
-            labels = dists.argmin(axis=1)
-            new_centers = np.array([X[labels == k].mean(axis=0) if (labels == k).any() else centers[k]
-                                    for k in range(self.n_clusters)])
-            if np.max(np.abs(new_centers - centers)) < self.tol:
+            new_labels = [min(range(self.n_clusters), key=lambda k: _dist(X[i], centers[k]))
+                          for i in range(n)]
+            # Update centers
+            new_centers = []
+            for k in range(self.n_clusters):
+                cluster = [X[i] for i in range(n) if new_labels[i] == k]
+                if cluster:
+                    new_centers.append([_mean_col(cluster, j) for j in range(p)])
+                else:
+                    new_centers.append(centers[k][:])
+            # Check convergence
+            shift = max(_dist(centers[k], new_centers[k]) for k in range(self.n_clusters))
+            centers, labels = new_centers, new_labels
+            if shift < self.tol:
                 break
-            centers = new_centers
-        inertia = sum(np.sum((X[labels == k] - centers[k])**2) for k in range(self.n_clusters))
-        return centers, labels, float(inertia)
+        inertia = sum(_dist(X[i], centers[labels[i]]) ** 2 for i in range(n))
+        return labels, centers, inertia
 
-    def fit(self, X) -> 'KMeans':
-        X = np.array(X, dtype=float)
-        if self.random_state is not None:
-            np.random.seed(self.random_state)
-        best_inertia = np.inf
-        for i in range(self.n_init):
-            centers, labels, inertia = self._run_once(X, seed=i)
+    def fit(self, X):
+        X2 = [[float(v) for v in row] for row in X]
+        rng = _random.Random(self.random_state)
+        best_labels, best_centers, best_inertia = None, None, float('inf')
+        for _ in range(self.n_init):
+            labels, centers, inertia = self._run_once(X2, rng)
             if inertia < best_inertia:
-                best_inertia = inertia
-                self.cluster_centers_ = centers
-                self.labels_ = labels
-                self.inertia_ = inertia
+                best_labels, best_centers, best_inertia = labels, centers, inertia
+        self.labels_ = best_labels
+        self.cluster_centers_ = best_centers
+        self.inertia_ = best_inertia
         return self
 
-    def predict(self, X) -> np.ndarray:
-        X = np.array(X, dtype=float)
-        dists = np.linalg.norm(X[:, None] - self.cluster_centers_[None], axis=2)
-        return dists.argmin(axis=1)
+    def predict(self, X):
+        X2 = [[float(v) for v in row] for row in X]
+        return [min(range(self.n_clusters), key=lambda k: _dist(x, self.cluster_centers_[k]))
+                for x in X2]
 
-    def fit_predict(self, X) -> np.ndarray:
-        self.fit(X)
-        return self.labels_
-
-    def score(self, X) -> float:
-        return -self.inertia_
+    def fit_predict(self, X):
+        return self.fit(X).labels_
 
 
 class DBSCAN:
@@ -61,158 +93,195 @@ class DBSCAN:
         self.eps = eps
         self.min_samples = min_samples
         self.metric = metric
-        self.labels_: Optional[np.ndarray] = None
-        self.core_sample_indices_: Optional[np.ndarray] = None
 
-    def fit(self, X) -> 'DBSCAN':
-        X = np.array(X, dtype=float)
-        n = len(X)
-        dists = np.linalg.norm(X[:, None] - X[None], axis=2)
-        labels = np.full(n, -1, dtype=int)
-        visited = np.zeros(n, dtype=bool)
+    def fit(self, X):
+        X2 = [[float(v) for v in row] for row in X]
+        n = len(X2)
+        labels = [-1] * n
+        visited = [False] * n
         cluster_id = 0
-        neighbors = [np.where(dists[i] <= self.eps)[0] for i in range(n)]
-        core = np.array([i for i in range(n) if len(neighbors[i]) >= self.min_samples])
-        self.core_sample_indices_ = core
 
-        def expand(idx, cid):
-            queue = list(neighbors[idx])
-            while queue:
-                q = queue.pop()
-                if not visited[q]:
-                    visited[q] = True
-                    if len(neighbors[q]) >= self.min_samples:
-                        for nb in neighbors[q]:
-                            if not visited[nb]:
-                                queue.append(nb)
-                if labels[q] == -1:
-                    labels[q] = cid
+        def neighbors(i):
+            return [j for j in range(n) if j != i and _dist(X2[i], X2[j]) <= self.eps]
 
-        for i in core:
-            if not visited[i]:
-                visited[i] = True
-                labels[i] = cluster_id
-                expand(i, cluster_id)
-                cluster_id += 1
-        self.labels_ = labels
+        for i in range(n):
+            if visited[i]:
+                continue
+            visited[i] = True
+            nbrs = neighbors(i)
+            if len(nbrs) < self.min_samples:
+                labels[i] = -1  # noise
+                continue
+            labels[i] = cluster_id
+            queue = list(nbrs)
+            qi = 0
+            while qi < len(queue):
+                j = queue[qi]
+                qi += 1
+                if not visited[j]:
+                    visited[j] = True
+                    nbrs2 = neighbors(j)
+                    if len(nbrs2) >= self.min_samples:
+                        queue.extend(nbrs2)
+                if labels[j] == -1:
+                    labels[j] = cluster_id
+            cluster_id += 1
+
+        self.labels_ = _ta(labels)
+        self.core_sample_indices_ = [i for i in range(n)
+                                     if labels[i] >= 0 and
+                                     len([j for j in range(n) if j != i and
+                                          _dist(X2[i], X2[j]) <= self.eps]) >= self.min_samples]
         return self
 
-    def fit_predict(self, X) -> np.ndarray:
-        self.fit(X)
-        return self.labels_
+    def fit_predict(self, X):
+        return self.fit(X).labels_
 
 
 class AgglomerativeClustering:
-    def __init__(self, n_clusters=2, linkage='ward'):
+    def __init__(self, n_clusters=2, linkage='ward', affinity='euclidean'):
         self.n_clusters = n_clusters
         self.linkage = linkage
-        self.labels_: Optional[np.ndarray] = None
+        self.affinity = affinity
 
-    def fit(self, X) -> 'AgglomerativeClustering':
-        X = np.array(X, dtype=float)
-        n = len(X)
-        clusters = [{i} for i in range(n)]
+    def fit(self, X):
+        X2 = [[float(v) for v in row] for row in X]
+        n = len(X2)
+        # Initialize each point as its own cluster
+        clusters = {i: [i] for i in range(n)}
+        active = set(range(n))
 
-        def dist(c1, c2):
-            pts1 = X[list(c1)]
-            pts2 = X[list(c2)]
-            if self.linkage == 'ward':
-                merged = np.vstack([pts1, pts2])
-                return len(merged) * np.sum((merged.mean(0) - np.vstack([
-                    np.tile(pts1.mean(0), (len(pts1),1)),
-                    np.tile(pts2.mean(0), (len(pts2),1))
-                ]))**2)
-            d = np.linalg.norm(pts1[:, None] - pts2[None], axis=2)
+        def cluster_dist(a_idx, b_idx):
+            pts_a = clusters[a_idx]
+            pts_b = clusters[b_idx]
+            dists = [_dist(X2[i], X2[j]) for i in pts_a for j in pts_b]
             if self.linkage == 'single':
-                return d.min()
+                return min(dists)
             if self.linkage == 'complete':
-                return d.max()
-            return d.mean()
+                return max(dists)
+            return sum(dists) / len(dists)  # average / ward approx
 
-        while len(clusters) > self.n_clusters:
-            best_d, merge_i, merge_j = np.inf, 0, 1
-            for i in range(len(clusters)):
-                for j in range(i+1, len(clusters)):
-                    d = dist(clusters[i], clusters[j])
+        next_id = n
+        while len(active) > self.n_clusters:
+            best_d, best_a, best_b = float('inf'), None, None
+            active_list = sorted(active)
+            for i in range(len(active_list)):
+                for j in range(i + 1, len(active_list)):
+                    d = cluster_dist(active_list[i], active_list[j])
                     if d < best_d:
-                        best_d, merge_i, merge_j = d, i, j
-            clusters[merge_i] = clusters[merge_i] | clusters[merge_j]
-            clusters.pop(merge_j)
+                        best_d, best_a, best_b = d, active_list[i], active_list[j]
+            new_cluster = clusters[best_a] + clusters[best_b]
+            clusters[next_id] = new_cluster
+            active.discard(best_a)
+            active.discard(best_b)
+            active.add(next_id)
+            next_id += 1
 
-        self.labels_ = np.zeros(n, dtype=int)
-        for label, cluster in enumerate(clusters):
-            for idx in cluster:
-                self.labels_[idx] = label
+        labels = [0] * n
+        for label_id, cluster_id in enumerate(sorted(active)):
+            for pt in clusters[cluster_id]:
+                labels[pt] = label_id
+        self.labels_ = labels
         return self
 
-    def fit_predict(self, X) -> np.ndarray:
-        self.fit(X)
-        return self.labels_
+    def fit_predict(self, X):
+        return self.fit(X).labels_
 
 
 class GaussianMixture:
-    def __init__(self, n_components=1, max_iter=100, tol=1e-3, random_state=None, covariance_type='full'):
+    """Gaussian Mixture Model with EM — pure Python."""
+
+    def __init__(self, n_components=1, max_iter=100, tol=1e-3, random_state=None,
+                 covariance_type='full'):
         self.n_components = n_components
         self.max_iter = max_iter
         self.tol = tol
         self.random_state = random_state
         self.covariance_type = covariance_type
-        self.weights_: Optional[np.ndarray] = None
-        self.means_: Optional[np.ndarray] = None
-        self.covariances_: Optional[np.ndarray] = None
 
-    def _gaussian_pdf(self, X, mean, cov):
-        d = X.shape[1]
-        diff = X - mean
-        try:
-            cov_inv = np.linalg.inv(cov + np.eye(d) * 1e-6)
-            cov_det = np.linalg.det(cov + np.eye(d) * 1e-6)
-        except np.linalg.LinAlgError:
-            cov_inv = np.eye(d)
-            cov_det = 1.0
-        exponent = -0.5 * np.einsum('ni,ij,nj->n', diff, cov_inv, diff)
-        return np.exp(exponent) / (np.sqrt((2*np.pi)**d * np.abs(cov_det)) + 1e-300)
+    def _log_gaussian(self, x, mean, cov_diag):
+        p = len(x)
+        log_det = sum(math.log(max(v, 1e-15)) for v in cov_diag)
+        z = sum((x[j] - mean[j]) ** 2 / max(cov_diag[j], 1e-15) for j in range(p))
+        return -0.5 * (p * math.log(2 * math.pi) + log_det + z)
 
-    def fit(self, X) -> 'GaussianMixture':
-        if self.random_state is not None:
-            np.random.seed(self.random_state)
-        X = np.array(X, dtype=float)
-        n, d = X.shape
+    def fit(self, X):
+        X2 = [[float(v) for v in row] for row in X]
+        n, p = len(X2), len(X2[0])
+        rng = _random.Random(self.random_state)
         K = self.n_components
-        idx = np.random.choice(n, K, replace=False)
-        self.means_ = X[idx].copy()
-        self.covariances_ = np.array([np.eye(d) for _ in range(K)])
-        self.weights_ = np.ones(K) / K
+        # Initialize
+        self.weights_ = [1.0 / K] * K
+        idxs = rng.sample(range(n), K)
+        self.means_ = [X2[i][:] for i in idxs]
+        self.covariances_ = [[1.0] * p for _ in range(K)]
+
         for _ in range(self.max_iter):
             # E-step
-            resp = np.array([self.weights_[k] * self._gaussian_pdf(X, self.means_[k], self.covariances_[k]) for k in range(K)]).T
-            resp_sum = resp.sum(axis=1, keepdims=True)
-            resp /= (resp_sum + 1e-300)
+            gamma = []
+            for i in range(n):
+                log_probs = [math.log(max(self.weights_[k], 1e-300)) +
+                             self._log_gaussian(X2[i], self.means_[k], self.covariances_[k])
+                             for k in range(K)]
+                mx = max(log_probs)
+                probs = [math.exp(lp - mx) for lp in log_probs]
+                total = sum(probs)
+                gamma.append([pr / total for pr in probs])
+
             # M-step
-            Nk = resp.sum(axis=0)
-            new_means = (resp.T @ X) / (Nk[:, None] + 1e-300)
-            new_covs = []
+            Nk = [sum(gamma[i][k] for i in range(n)) for k in range(K)]
+            old_means = [m[:] for m in self.means_]
             for k in range(K):
-                diff = X - new_means[k]
-                new_covs.append((resp[:, k:k+1] * diff).T @ diff / (Nk[k] + 1e-300))
-            old_means = self.means_.copy()
-            self.means_ = new_means
-            self.covariances_ = np.array(new_covs)
-            self.weights_ = Nk / n
-            if np.max(np.abs(self.means_ - old_means)) < self.tol:
+                nk = max(Nk[k], 1e-10)
+                self.means_[k] = [sum(gamma[i][k] * X2[i][j] for i in range(n)) / nk
+                                   for j in range(p)]
+                self.covariances_[k] = [
+                    sum(gamma[i][k] * (X2[i][j] - self.means_[k][j]) ** 2 for i in range(n)) / nk + 1e-6
+                    for j in range(p)]
+                self.weights_[k] = Nk[k] / n
+
+            shift = max(_dist(self.means_[k], old_means[k]) for k in range(K))
+            if shift < self.tol:
                 break
+
         return self
 
-    def predict(self, X) -> np.ndarray:
-        return self.predict_proba(X).argmax(axis=1)
-
-    def predict_proba(self, X) -> np.ndarray:
-        X = np.array(X, dtype=float)
+    def predict(self, X):
+        X2 = [[float(v) for v in row] for row in X]
         K = self.n_components
-        resp = np.array([self.weights_[k] * self._gaussian_pdf(X, self.means_[k], self.covariances_[k]) for k in range(K)]).T
-        resp_sum = resp.sum(axis=1, keepdims=True)
-        return resp / (resp_sum + 1e-300)
+        result = []
+        for x in X2:
+            scores = [math.log(max(self.weights_[k], 1e-300)) +
+                      self._log_gaussian(x, self.means_[k], self.covariances_[k])
+                      for k in range(K)]
+            result.append(scores.index(max(scores)))
+        return result
 
-    def fit_predict(self, X) -> np.ndarray:
-        self.fit(X)
-        return self.predict(X)
+    def predict_proba(self, X):
+        X2 = [[float(v) for v in row] for row in X]
+        K = self.n_components
+        result = []
+        for x in X2:
+            log_probs = [math.log(max(self.weights_[k], 1e-300)) +
+                         self._log_gaussian(x, self.means_[k], self.covariances_[k])
+                         for k in range(K)]
+            mx = max(log_probs)
+            probs = [math.exp(lp - mx) for lp in log_probs]
+            total = sum(probs)
+            result.append([pr / total for pr in probs])
+        return result
+
+    def fit_predict(self, X):
+        return self.fit(X).predict(X)
+
+    def score(self, X):
+        X2 = [[float(v) for v in row] for row in X]
+        K = self.n_components
+        total = 0.0
+        for x in X2:
+            log_probs = [math.log(max(self.weights_[k], 1e-300)) +
+                         self._log_gaussian(x, self.means_[k], self.covariances_[k])
+                         for k in range(K)]
+            mx = max(log_probs)
+            total += mx + math.log(sum(math.exp(lp - mx) for lp in log_probs))
+        return total / len(X2)

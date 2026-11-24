@@ -1,0 +1,73 @@
+name: CI
+
+on:
+  push:
+    branches: [main, dev]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    name: Tests on ${{ matrix.os }} / Python ${{ matrix.python }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+        python: ["3.11", "3.12"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install pytest numpy reportlab
+
+      - name: Build C extension (Linux/macOS)
+        if: runner.os != 'Windows'
+        run: bash scripts/build_vp_core_linux.sh python
+        continue-on-error: true  # C ext is optional; pure-Python fallback works
+
+      - name: Build C extension (Windows)
+        if: runner.os == 'Windows'
+        run: scripts\build_vp_core_win.bat
+        shell: cmd
+        continue-on-error: true  # C ext is optional; pure-Python fallback works
+
+      - name: Install vectorphile
+        run: pip install -e . --no-build-isolation
+
+      - name: Run core tests
+        run: |
+          python -m pytest tests/test_autograd.py tests/test_tensor.py tests/test_nn.py tests/test_ml.py tests/test_data.py tests/test_gradients.py -q --tb=short
+
+      - name: Run flash attention tests
+        run: python -m pytest tests/test_flash_attention.py -q --tb=short
+
+      - name: Run GPU tests (expect skip without CUDA)
+        run: python -m pytest tests/test_gpu.py -q --tb=short
+        continue-on-error: true
+
+  lint:
+    name: Import check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -e . --no-build-isolation numpy
+      - name: Verify package imports
+        run: |
+          python -c "import vectorphile as vp; print('vp version OK')"
+          python -c "import vectorphile.nn as nn; print('nn OK')"
+          python -c "import vectorphile.autograd as ag; print('autograd OK')"
+          python -c "import vectorphile.distributed as dist; print('distributed OK')"
+          python -c "import vectorphile.peft as peft; print('peft OK')"
+          python -c "import vectorphile.amp as amp; print('amp OK')"

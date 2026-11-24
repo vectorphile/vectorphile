@@ -1,68 +1,149 @@
 """CNN architectures — LeNet, VGG, ResNet, DenseNet, MobileNetV2, EfficientNet."""
 from __future__ import annotations
-import numpy as np
+import math as _math
+import random as _random
 from typing import List, Optional, Tuple, Callable
 from vectorphile.nn.module import Module
 from vectorphile.core.tensor import Tensor
+from vectorphile._core.ndarray import array as _nd_arr, NDArray
+
+
+def _nd_randn(shape, scale=1.0):
+    n = 1
+    for s in shape: n *= s
+    flat = [_math.sqrt(-2*_math.log(max(_random.random(),1e-10)))*_math.cos(2*_math.pi*_random.random())*scale
+            for _ in range(n)]
+    return _nd_arr(flat, dtype='float32').reshape(shape)
+
+def _nd_zeros(shape):
+    n = 1
+    for s in shape: n *= s
+    return _nd_arr([0.0]*n, dtype='float32').reshape(shape)
+
+def _nd_ones(shape):
+    n = 1
+    for s in shape: n *= s
+    return _nd_arr([1.0]*n, dtype='float32').reshape(shape)
 
 
 # ── Primitives ────────────────────────────────────────────────────────────────
 
-def _conv2d(x: np.ndarray, w: np.ndarray, b: Optional[np.ndarray],
-            stride: int, padding: int) -> np.ndarray:
-    """Pure-numpy conv2d (NCHW)."""
+def _conv2d(x: NDArray, w: NDArray, b, stride: int, padding: int) -> NDArray:
+    """Pure-NDArray conv2d (NCHW)."""
     N, C_in, H, W = x.shape
     C_out, _, kH, kW = w.shape
     H_out = (H + 2 * padding - kH) // stride + 1
     W_out = (W + 2 * padding - kW) // stride + 1
+    xf = x.to_flat_list()
+    wf = w.to_flat_list()
+    # Pad if needed
     if padding > 0:
-        x = np.pad(x, ((0,0),(0,0),(padding,padding),(padding,padding)))
-    out = np.zeros((N, C_out, H_out, W_out), dtype=np.float32)
-    for i in range(H_out):
-        for j in range(W_out):
-            patch = x[:, :, i*stride:i*stride+kH, j*stride:j*stride+kW]  # (N, C_in, kH, kW)
-            out[:, :, i, j] = np.einsum('nchw,ochw->no', patch, w)
-    if b is not None:
-        out += b[None, :, None, None]
-    return out
-
-
-def _batch_norm(x: np.ndarray, weight: np.ndarray, bias: np.ndarray,
-                running_mean: np.ndarray, running_var: np.ndarray,
-                training: bool, momentum: float = 0.1, eps: float = 1e-5) -> np.ndarray:
-    if training:
-        axes = (0, 2, 3) if x.ndim == 4 else (0,)
-        mean = x.mean(axis=axes, keepdims=True)
-        var = x.var(axis=axes, keepdims=True)
-        m = x.mean(axis=axes)
-        v = x.var(axis=axes)
-        running_mean[:] = (1 - momentum) * running_mean + momentum * m
-        running_var[:]  = (1 - momentum) * running_var  + momentum * v
+        from vectorphile.core.tensor import _nd_pad
+        x = _nd_pad(x, ((0,0),(0,0),(padding,padding),(padding,padding)))
+        H_p = H + 2*padding; W_p = W + 2*padding
+        xf = x.to_flat_list()
     else:
-        shape = (-1,) + (1,) * (x.ndim - 1)
-        mean = running_mean.reshape(shape)
-        var  = running_var.reshape(shape)
-    x_norm = (x - mean) / np.sqrt(var + eps)
-    if x.ndim == 4:
-        return x_norm * weight[None, :, None, None] + bias[None, :, None, None]
-    return x_norm * weight + bias
+        H_p, W_p = H, W
+    out = [0.0] * (N * C_out * H_out * W_out)
+    for n in range(N):
+        for co in range(C_out):
+            for i in range(H_out):
+                for j in range(W_out):
+                    s = 0.0
+                    for ci in range(C_in):
+                        for ki in range(kH):
+                            for kj in range(kW):
+                                xi = i*stride + ki; xj = j*stride + kj
+                                x_v = xf[n*C_in*H_p*W_p + ci*H_p*W_p + xi*W_p + xj]
+                                w_v = wf[co*C_in*kH*kW + ci*kH*kW + ki*kW + kj]
+                                s += x_v * w_v
+                    if b is not None:
+                        bf = b.to_flat_list() if hasattr(b, 'to_flat_list') else list(b)
+                        s += bf[co]
+                    out[n*C_out*H_out*W_out + co*H_out*W_out + i*W_out + j] = s
+    return _nd_arr(out, dtype='float32').reshape((N, C_out, H_out, W_out))
 
 
-def _relu(x: np.ndarray) -> np.ndarray: return np.maximum(x, 0)
-def _silu(x: np.ndarray) -> np.ndarray: return x * (1 / (1 + np.exp(-x)))
+def _batch_norm(x: NDArray, weight, bias, running_mean, running_var,
+                training: bool, momentum: float = 0.1, eps: float = 1e-5) -> NDArray:
+    xf = x.to_flat_list(); sh = list(x.shape)
+    C = sh[1] if len(sh) == 4 else sh[-1]
+    is_4d = len(sh) == 4
+    N = sh[0]; HW = (sh[2]*sh[3]) if is_4d else 1
+    # Compute per-channel stats
+    rmf = running_mean.to_flat_list() if hasattr(running_mean, 'to_flat_list') else list(running_mean)
+    rvf = running_var.to_flat_list() if hasattr(running_var, 'to_flat_list') else list(running_var)
+    if training:
+        mean_c = [0.0]*C; var_c = [0.0]*C
+        cnt = N * HW
+        for n in range(N):
+            for c in range(C):
+                for hw in range(HW):
+                    idx = n*C*HW + c*HW + hw if is_4d else n*C + c
+                    mean_c[c] += xf[idx]
+        mean_c = [v/cnt for v in mean_c]
+        for n in range(N):
+            for c in range(C):
+                for hw in range(HW):
+                    idx = n*C*HW + c*HW + hw if is_4d else n*C + c
+                    var_c[c] += (xf[idx] - mean_c[c])**2
+        var_c = [v/cnt for v in var_c]
+        rmf = [(1-momentum)*rmf[c] + momentum*mean_c[c] for c in range(C)]
+        rvf = [(1-momentum)*rvf[c] + momentum*var_c[c] for c in range(C)]
+        # Update running stats in-place
+        if hasattr(running_mean, 'to_flat_list'):
+            import array as _arr
+            running_mean._buf[:] = _arr.array('f', [float(v) for v in rmf])
+            running_var._buf[:] = _arr.array('f', [float(v) for v in rvf])
+    else:
+        mean_c = rmf; var_c = rvf
+    wf2 = weight.to_flat_list() if hasattr(weight, 'to_flat_list') else list(weight)
+    bf2 = bias.to_flat_list() if hasattr(bias, 'to_flat_list') else list(bias)
+    out = []
+    for n in range(N):
+        for c in range(C):
+            inv = 1.0/_math.sqrt(var_c[c] + eps)
+            for hw in range(HW):
+                idx = n*C*HW + c*HW + hw if is_4d else n*C + c
+                out.append((xf[idx] - mean_c[c]) * inv * wf2[c] + bf2[c])
+    return _nd_arr(out, dtype='float32').reshape(tuple(sh))
 
-def _maxpool2d(x: np.ndarray, kernel_size: int, stride: int) -> np.ndarray:
+
+def _relu(x: NDArray) -> NDArray:
+    flat = x.to_flat_list()
+    return _nd_arr([max(0.0, v) for v in flat], dtype='float32').reshape(x.shape)
+
+def _silu(x: NDArray) -> NDArray:
+    flat = x.to_flat_list()
+    return _nd_arr([v/(1+_math.exp(-v)) for v in flat], dtype='float32').reshape(x.shape)
+
+def _maxpool2d(x: NDArray, kernel_size: int, stride: int) -> NDArray:
     N, C, H, W = x.shape
     H_out = (H - kernel_size) // stride + 1
     W_out = (W - kernel_size) // stride + 1
-    out = np.zeros((N, C, H_out, W_out), dtype=np.float32)
-    for i in range(H_out):
-        for j in range(W_out):
-            out[:, :, i, j] = x[:, :, i*stride:i*stride+kernel_size, j*stride:j*stride+kernel_size].max(axis=(2,3))
-    return out
+    xf = x.to_flat_list()
+    out = []
+    for n in range(N):
+        for c in range(C):
+            for i in range(H_out):
+                for j in range(W_out):
+                    mx = -1e30
+                    for ki in range(kernel_size):
+                        for kj in range(kernel_size):
+                            hi = i*stride+ki; wj = j*stride+kj
+                            mx = max(mx, xf[n*C*H*W + c*H*W + hi*W + wj])
+                    out.append(mx)
+    return _nd_arr(out, dtype='float32').reshape((N, C, H_out, W_out))
 
-def _avgpool2d_global(x: np.ndarray) -> np.ndarray:
-    return x.mean(axis=(2, 3))
+def _avgpool2d_global(x: NDArray) -> NDArray:
+    N, C, H, W = x.shape
+    xf = x.to_flat_list()
+    out = []
+    for n in range(N):
+        for c in range(C):
+            s = sum(xf[n*C*H*W + c*H*W + i] for i in range(H*W)) / (H*W)
+            out.append(s)
+    return _nd_arr(out, dtype='float32').reshape((N, C))
 
 
 class ConvBNReLU(Module):
@@ -75,18 +156,18 @@ class ConvBNReLU(Module):
         self.stride = stride
         self.padding = padding
         self.activation = activation
-        scale = np.sqrt(2.0 / (in_c * kernel_size * kernel_size))
-        self.weight = Tensor(np.random.randn(out_c, in_c // groups, kernel_size, kernel_size).astype(np.float32) * scale)
+        scale = _math.sqrt(2.0 / (in_c * kernel_size * kernel_size))
+        self.weight = Tensor(_nd_randn((out_c, in_c // groups, kernel_size, kernel_size), scale))
         self.weight.requires_grad = True
         self._parameters['weight'] = self.weight
-        self.bn_w = Tensor(np.ones(out_c, dtype=np.float32))
-        self.bn_b = Tensor(np.zeros(out_c, dtype=np.float32))
+        self.bn_w = Tensor(_nd_ones((out_c,)))
+        self.bn_b = Tensor(_nd_zeros((out_c,)))
         self.bn_w.requires_grad = True
         self.bn_b.requires_grad = True
         self._parameters['bn_weight'] = self.bn_w
         self._parameters['bn_bias'] = self.bn_b
-        self._running_mean = np.zeros(out_c, dtype=np.float32)
-        self._running_var  = np.ones(out_c, dtype=np.float32)
+        self._running_mean = _nd_zeros((out_c,))
+        self._running_var  = _nd_ones((out_c,))
 
     def forward(self, x: Tensor) -> Tensor:
         out = _conv2d(x._data, self.weight._data, None, self.stride, self.padding)
@@ -107,18 +188,18 @@ class LeNet5(Module):
     def __init__(self, num_classes: int = 10, in_channels: int = 1):
         super().__init__()
         # C1: 1 → 6, 5x5
-        self.c1_w = Tensor(np.random.randn(6, in_channels, 5, 5).astype(np.float32) * 0.1)
-        self.c1_b = Tensor(np.zeros(6, dtype=np.float32))
+        self.c1_w = Tensor(_nd_randn((6, in_channels, 5, 5), 0.1))
+        self.c1_b = Tensor(_nd_zeros((6,)))
         # C3: 6 → 16, 5x5
-        self.c3_w = Tensor(np.random.randn(16, 6, 5, 5).astype(np.float32) * 0.1)
-        self.c3_b = Tensor(np.zeros(16, dtype=np.float32))
+        self.c3_w = Tensor(_nd_randn((16, 6, 5, 5), 0.1))
+        self.c3_b = Tensor(_nd_zeros((16,)))
         # FC
-        self.f5_w = Tensor(np.random.randn(400, 120).astype(np.float32) * 0.1)
-        self.f5_b = Tensor(np.zeros(120, dtype=np.float32))
-        self.f6_w = Tensor(np.random.randn(120, 84).astype(np.float32) * 0.1)
-        self.f6_b = Tensor(np.zeros(84, dtype=np.float32))
-        self.out_w = Tensor(np.random.randn(84, num_classes).astype(np.float32) * 0.1)
-        self.out_b = Tensor(np.zeros(num_classes, dtype=np.float32))
+        self.f5_w = Tensor(_nd_randn((400, 120), 0.1))
+        self.f5_b = Tensor(_nd_zeros((120,)))
+        self.f6_w = Tensor(_nd_randn((120, 84), 0.1))
+        self.f6_b = Tensor(_nd_zeros((84,)))
+        self.out_w = Tensor(_nd_randn((84, num_classes), 0.1))
+        self.out_b = Tensor(_nd_zeros((num_classes,)))
         for n, p in [('c1_w',self.c1_w),('c1_b',self.c1_b),('c3_w',self.c3_w),
                      ('c3_b',self.c3_b),('f5_w',self.f5_w),('f5_b',self.f5_b),
                      ('f6_w',self.f6_w),('f6_b',self.f6_b),('out_w',self.out_w),('out_b',self.out_b)]:
@@ -202,12 +283,12 @@ class VGG(Module):
                 self._conv_layers.append((True, None))
 
         # Classifier
-        self.fc1_w = Tensor(np.random.randn(512 * 7 * 7, 4096).astype(np.float32) * 0.01)
-        self.fc1_b = Tensor(np.zeros(4096, dtype=np.float32))
-        self.fc2_w = Tensor(np.random.randn(4096, 4096).astype(np.float32) * 0.01)
-        self.fc2_b = Tensor(np.zeros(4096, dtype=np.float32))
-        self.fc3_w = Tensor(np.random.randn(4096, num_classes).astype(np.float32) * 0.01)
-        self.fc3_b = Tensor(np.zeros(num_classes, dtype=np.float32))
+        self.fc1_w = Tensor(_nd_randn((512 * 7 * 7, 4096), 0.01))
+        self.fc1_b = Tensor(_nd_zeros((4096,)))
+        self.fc2_w = Tensor(_nd_randn((4096, 4096), 0.01))
+        self.fc2_b = Tensor(_nd_zeros((4096,)))
+        self.fc3_w = Tensor(_nd_randn((4096, num_classes), 0.01))
+        self.fc3_b = Tensor(_nd_zeros((num_classes,)))
         for n, p in [('fc1_w',self.fc1_w),('fc1_b',self.fc1_b),
                      ('fc2_w',self.fc2_w),('fc2_b',self.fc2_b),
                      ('fc3_w',self.fc3_w),('fc3_b',self.fc3_b)]:
@@ -316,8 +397,8 @@ class ResNet(Module):
         self.layer3 = self._make_layer(block_cls, base * 4, layers[2], stride=2)
         self.layer4 = self._make_layer(block_cls, base * 8, layers[3], stride=2)
         fc_in = (base * 8) * block_cls.expansion
-        self.fc_w = Tensor(np.random.randn(fc_in, num_classes).astype(np.float32) * 0.01)
-        self.fc_b = Tensor(np.zeros(num_classes, dtype=np.float32))
+        self.fc_w = Tensor(_nd_randn((fc_in, num_classes), 0.01))
+        self.fc_b = Tensor(_nd_zeros((num_classes,)))
         self.fc_w.requires_grad = True
         self.fc_b.requires_grad = True
         self._parameters.update({'fc_w': self.fc_w, 'fc_b': self.fc_b})
@@ -363,7 +444,8 @@ class DenseLayer(Module):
 
     def forward(self, x: Tensor) -> Tensor:
         new_feat = self.conv2(self.conv1(x))._data
-        return Tensor(np.concatenate([x._data, new_feat], axis=1))
+        from vectorphile.core.tensor import _nd_concatenate
+        return Tensor(_nd_concatenate([x._data, new_feat], axis=1))
 
 
 class DenseBlock(Module):
@@ -428,8 +510,8 @@ class DenseNet(Module):
                 self.transitions.append(trans)
                 self._modules[f'transition_{i}'] = trans
                 num_features = num_features // 2
-        self.fc_w = Tensor(np.random.randn(num_features, num_classes).astype(np.float32) * 0.01)
-        self.fc_b = Tensor(np.zeros(num_classes, dtype=np.float32))
+        self.fc_w = Tensor(_nd_randn((num_features, num_classes), 0.01))
+        self.fc_b = Tensor(_nd_zeros((num_classes,)))
         self.fc_w.requires_grad = True
         self.fc_b.requires_grad = True
         self._parameters.update({'fc_w': self.fc_w, 'fc_b': self.fc_b})
@@ -506,8 +588,8 @@ class MobileNetV2(Module):
         last_c = int(1280 * max(1.0, width_mult))
         self.last_conv = ConvBNReLU(input_channel, last_c, 1, 1, 0, activation='silu')
         self._modules['last_conv'] = self.last_conv
-        self.fc_w = Tensor(np.random.randn(last_c, num_classes).astype(np.float32) * 0.01)
-        self.fc_b = Tensor(np.zeros(num_classes, dtype=np.float32))
+        self.fc_w = Tensor(_nd_randn((last_c, num_classes), 0.01))
+        self.fc_b = Tensor(_nd_zeros((num_classes,)))
         self.fc_w.requires_grad = True
         self.fc_b.requires_grad = True
         self._parameters.update({'fc_w': self.fc_w, 'fc_b': self.fc_b})
@@ -530,8 +612,8 @@ class SEBlock(Module):
     def __init__(self, in_c: int, se_ratio: float = 0.25):
         super().__init__()
         se_c = max(1, int(in_c * se_ratio))
-        self.fc1_w = Tensor(np.random.randn(in_c, se_c).astype(np.float32) * 0.01)
-        self.fc2_w = Tensor(np.random.randn(se_c, in_c).astype(np.float32) * 0.01)
+        self.fc1_w = Tensor(_nd_randn((in_c, se_c), 0.01))
+        self.fc2_w = Tensor(_nd_randn((se_c, in_c), 0.01))
         for n, p in [('fc1_w', self.fc1_w), ('fc2_w', self.fc2_w)]:
             p.requires_grad = True
             self._parameters[n] = p
@@ -540,7 +622,11 @@ class SEBlock(Module):
         d = x._data
         se = d.mean(axis=(2, 3))                    # (N, C)
         se = _silu(se @ self.fc1_w._data)
-        se = 1 / (1 + np.exp(-(se @ self.fc2_w._data)))  # sigmoid
+        se_flat = (se @ self.fc2_w._data).to_flat_list()
+        se_sh = (se @ self.fc2_w._data).shape if hasattr((se @ self.fc2_w._data), 'shape') else None
+        _tmp = se @ self.fc2_w._data
+        se_flat2 = _tmp.to_flat_list()
+        se = _nd_arr([1/(1+_math.exp(-v)) for v in se_flat2], dtype='float32').reshape(_tmp.shape)
         return Tensor(d * se[:, :, None, None])
 
 
@@ -617,7 +703,7 @@ class EfficientNet(Module):
         in_c = stem_c
         for t, c, n, s, k in self._BASE:
             out_c = int(c * width_mult)
-            num_layers = max(1, int(np.ceil(n * depth_mult)))
+            num_layers = max(1, int(_math.ceil(n * depth_mult)))
             for i in range(num_layers):
                 b = MBConv(in_c, out_c, s if i == 0 else 1, t)
                 self.blocks.append(b)
@@ -626,8 +712,8 @@ class EfficientNet(Module):
         last_c = int(1280 * width_mult)
         self.last_conv = ConvBNReLU(in_c, last_c, 1, 1, 0, activation='silu')
         self._modules['last_conv'] = self.last_conv
-        self.fc_w = Tensor(np.random.randn(last_c, num_classes).astype(np.float32) * 0.01)
-        self.fc_b = Tensor(np.zeros(num_classes, dtype=np.float32))
+        self.fc_w = Tensor(_nd_randn((last_c, num_classes), 0.01))
+        self.fc_b = Tensor(_nd_zeros((num_classes,)))
         self.fc_w.requires_grad = True
         self.fc_b.requires_grad = True
         self._parameters.update({'fc_w': self.fc_w, 'fc_b': self.fc_b})
@@ -644,3 +730,208 @@ class EfficientNet(Module):
         d = Tensor(_avgpool2d_global(d._data))
         d = Tensor(d._data.reshape(d._data.shape[0], -1))
         return Tensor(d._data @ self.fc_w._data + self.fc_b._data)
+
+
+# ── ConvNeXt ──────────────────────────────────────────────────────────────────
+
+class ConvNeXtBlock(Module):
+    """ConvNeXt block (Liu et al. 2022).
+
+    Key design: depthwise 7×7 conv → LayerNorm → 1×1 Linear ×4 → GELU → 1×1 Linear.
+    Uses Layer Scale (eps=1e-6) and Stochastic Depth.
+    """
+
+    def __init__(self, dim: int, layer_scale_init: float = 1e-6, drop_path_rate: float = 0.0):
+        super().__init__()
+        from vectorphile.nn.layers import Linear, Conv2d, LayerNorm
+        self.dwconv = Conv2d(dim, dim, kernel_size=7, padding=3, groups=dim)
+        self.norm = LayerNorm(dim)
+        self.pw1 = Linear(dim, dim * 4)
+        self.pw2 = Linear(dim * 4, dim)
+        self.drop_path_rate = drop_path_rate
+        # Layer scale parameter
+        self.gamma = Tensor(_nd_arr([layer_scale_init] * dim, 'float32'))
+        self.gamma.requires_grad = True
+        self._parameters['gamma'] = self.gamma
+        self._modules.update({'dwconv': self.dwconv, 'norm': self.norm,
+                               'pw1': self.pw1, 'pw2': self.pw2})
+
+    def forward(self, x: Tensor) -> Tensor:
+        import math as _m
+        residual = x
+        # DW conv: (N, C, H, W) → (N, C, H, W)
+        h = self.dwconv(x)
+        # Permute to (N, H, W, C) for LayerNorm
+        h_data = h._data
+        sh = h_data.shape  # N, C, H, W
+        N, C, H, W = sh
+        flat = h_data.to_flat_list() if hasattr(h_data, 'to_flat_list') else list(h_data)
+        # (N,C,H,W) → (N,H,W,C)
+        reordered = []
+        for n in range(N):
+            for hh in range(H):
+                for ww in range(W):
+                    for c in range(C):
+                        reordered.append(flat[n*C*H*W + c*H*W + hh*W + ww])
+        h_nhwc = Tensor(_nd_arr(reordered, 'float32').reshape((N, H, W, C)))
+        h_nhwc = self.norm(h_nhwc)
+        h_nhwc = self.pw1(h_nhwc)
+        # GELU
+        hf = h_nhwc._data.to_flat_list() if hasattr(h_nhwc._data, 'to_flat_list') else list(h_nhwc._data)
+        c2 = _m.sqrt(2.0 / _m.pi)
+        hf = [0.5*v*(1+_m.tanh(c2*(v+0.044715*v**3))) for v in hf]
+        h_nhwc = Tensor(_nd_arr(hf, 'float32').reshape(h_nhwc._data.shape))
+        h_nhwc = self.pw2(h_nhwc)
+        # Apply layer scale
+        gf = self.gamma._data.to_flat_list() if hasattr(self.gamma._data, 'to_flat_list') else list(self.gamma._data)
+        hf2 = h_nhwc._data.to_flat_list() if hasattr(h_nhwc._data, 'to_flat_list') else list(h_nhwc._data)
+        hf2 = [v * gf[i % C] for i, v in enumerate(hf2)]
+        h_nhwc = Tensor(_nd_arr(hf2, 'float32').reshape((N, H, W, C)))
+        # Permute back (N,H,W,C) → (N,C,H,W)
+        back = []
+        hf3 = h_nhwc._data.to_flat_list() if hasattr(h_nhwc._data, 'to_flat_list') else list(h_nhwc._data)
+        for n in range(N):
+            for c in range(C):
+                for hh in range(H):
+                    for ww in range(W):
+                        back.append(hf3[n*H*W*C + hh*W*C + ww*C + c])
+        h_out = Tensor(_nd_arr(back, 'float32').reshape((N, C, H, W)))
+        # Stochastic depth (drop path) during training
+        if self.training and self.drop_path_rate > 0.0:
+            import random as _r
+            if _r.random() < self.drop_path_rate:
+                return residual
+        rf = residual._data.to_flat_list() if hasattr(residual._data, 'to_flat_list') else list(residual._data)
+        hf4 = h_out._data.to_flat_list() if hasattr(h_out._data, 'to_flat_list') else list(h_out._data)
+        return Tensor(_nd_arr([a+b for a, b in zip(rf, hf4)], 'float32').reshape((N, C, H, W)))
+
+
+class ConvNeXt(Module):
+    """ConvNeXt — Liu et al. 2022.
+
+    Modernized CNN built from Vision Transformer design principles.
+    Beats Swin Transformer at all scales; pure conv, no attention.
+
+    Configurations::
+        Tiny:  dims=(96,192,384,768),  depths=(3,3,9,3)
+        Small: dims=(96,192,384,768),  depths=(3,3,27,3)
+        Base:  dims=(128,256,512,1024),depths=(3,3,27,3)
+        Large: dims=(192,384,768,1536),depths=(3,3,27,3)
+
+    Usage::
+        model = ConvNeXt.tiny(num_classes=1000)
+        model = ConvNeXt(dims=(96,192,384,768), depths=(3,3,9,3), num_classes=1000)
+    """
+
+    CONFIGS = {
+        'tiny':  dict(dims=(96,192,384,768),   depths=(3,3,9,3)),
+        'small': dict(dims=(96,192,384,768),   depths=(3,3,27,3)),
+        'base':  dict(dims=(128,256,512,1024), depths=(3,3,27,3)),
+        'large': dict(dims=(192,384,768,1536), depths=(3,3,27,3)),
+    }
+
+    def __init__(self, dims=(96,192,384,768), depths=(3,3,9,3),
+                 num_classes=1000, drop_path_rate=0.0, in_channels=3):
+        super().__init__()
+        from vectorphile.nn.layers import Conv2d, LayerNorm, Linear
+        total_blocks = sum(depths)
+        dp_rates = [x for x in _linspace_flat(0.0, drop_path_rate, total_blocks)]
+
+        # Stem: patchify 4×4
+        self.stem_conv = Conv2d(in_channels, dims[0], kernel_size=4, stride=4)
+        self.stem_norm = LayerNorm(dims[0])
+        self._modules.update({'stem_conv': self.stem_conv, 'stem_norm': self.stem_norm})
+
+        self.stages = []
+        self.downsamples = []
+        block_idx = 0
+        for stage_idx, (dim, depth) in enumerate(zip(dims, depths)):
+            # Downsampling between stages
+            if stage_idx > 0:
+                ds_norm = LayerNorm(dims[stage_idx - 1])
+                ds_conv = Conv2d(dims[stage_idx - 1], dim, kernel_size=2, stride=2)
+                self.downsamples.append((ds_norm, ds_conv))
+                self._modules[f'ds_norm_{stage_idx}'] = ds_norm
+                self._modules[f'ds_conv_{stage_idx}'] = ds_conv
+            else:
+                self.downsamples.append(None)
+            blocks = []
+            for _ in range(depth):
+                b = ConvNeXtBlock(dim, drop_path_rate=dp_rates[block_idx])
+                blocks.append(b)
+                self._modules[f'stage{stage_idx}_block{_}'] = b
+                block_idx += 1
+            self.stages.append(blocks)
+
+        self.head_norm = LayerNorm(dims[-1])
+        self.head = Linear(dims[-1], num_classes)
+        self._modules.update({'head_norm': self.head_norm, 'head': self.head})
+
+    @classmethod
+    def tiny(cls, **kwargs): return cls(**{**cls.CONFIGS['tiny'], **kwargs})
+    @classmethod
+    def small(cls, **kwargs): return cls(**{**cls.CONFIGS['small'], **kwargs})
+    @classmethod
+    def base(cls, **kwargs): return cls(**{**cls.CONFIGS['base'], **kwargs})
+    @classmethod
+    def large(cls, **kwargs): return cls(**{**cls.CONFIGS['large'], **kwargs})
+
+    def forward(self, x: Tensor) -> Tensor:
+        # Stem
+        h = self.stem_conv(x)
+        # Apply stem norm: permute, norm, permute back
+        sh = h._data.shape; N, C, H, W = sh
+        flat = h._data.to_flat_list() if hasattr(h._data, 'to_flat_list') else list(h._data)
+        reordered = []
+        for n in range(N):
+            for hh in range(H):
+                for ww in range(W):
+                    for c in range(C):
+                        reordered.append(flat[n*C*H*W + c*H*W + hh*W + ww])
+        h_nhwc = Tensor(_nd_arr(reordered, 'float32').reshape((N, H, W, C)))
+        h_nhwc = self.stem_norm(h_nhwc)
+        # Permute back
+        hf = h_nhwc._data.to_flat_list() if hasattr(h_nhwc._data, 'to_flat_list') else list(h_nhwc._data)
+        back = []
+        for n in range(N):
+            for c in range(C):
+                for hh in range(H):
+                    for ww in range(W):
+                        back.append(hf[n*H*W*C + hh*W*C + ww*C + c])
+        h = Tensor(_nd_arr(back, 'float32').reshape((N, C, H, W)))
+
+        # Stages
+        for stage_idx, (blocks, ds) in enumerate(zip(self.stages, self.downsamples)):
+            if ds is not None:
+                ds_norm, ds_conv = ds
+                # Permute, norm, permute back, then conv
+                sh2 = h._data.shape; N2, C2, H2, W2 = sh2
+                flat2 = h._data.to_flat_list() if hasattr(h._data, 'to_flat_list') else list(h._data)
+                r2 = [flat2[n*C2*H2*W2 + c*H2*W2 + hh*W2 + ww]
+                      for n in range(N2) for hh in range(H2) for ww in range(W2) for c in range(C2)]
+                h_n = Tensor(_nd_arr(r2, 'float32').reshape((N2, H2, W2, C2)))
+                h_n = ds_norm(h_n)
+                hf2 = h_n._data.to_flat_list() if hasattr(h_n._data, 'to_flat_list') else list(h_n._data)
+                b2 = [hf2[n*H2*W2*C2 + hh*W2*C2 + ww*C2 + c]
+                      for n in range(N2) for c in range(C2) for hh in range(H2) for ww in range(W2)]
+                h = ds_conv(Tensor(_nd_arr(b2, 'float32').reshape((N2, C2, H2, W2))))
+            for block in blocks:
+                h = block(h)
+
+        # Head: global average pool → norm → classify
+        sh3 = h._data.shape; N3, C3, H3, W3 = sh3
+        flat3 = h._data.to_flat_list() if hasattr(h._data, 'to_flat_list') else list(h._data)
+        gap = []
+        for n in range(N3):
+            for c in range(C3):
+                s = sum(flat3[n*C3*H3*W3 + c*H3*W3 + hh*W3 + ww]
+                        for hh in range(H3) for ww in range(W3))
+                gap.append(s / (H3 * W3))
+        h_gap = Tensor(_nd_arr(gap, 'float32').reshape((N3, C3)))
+        h_gap = self.head_norm(h_gap)
+        return self.head(h_gap)
+
+
+def _linspace_flat(start, stop, n):
+    if n <= 1: return [start]
+    return [start + (stop - start) * i / (n - 1) for i in range(n)]

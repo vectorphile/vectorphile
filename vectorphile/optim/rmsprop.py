@@ -1,6 +1,7 @@
-"""RMSprop and Adagrad optimizers."""
-import numpy as np
+"""RMSprop optimizer."""
+import math as _math
 from vectorphile.optim.optimizer import Optimizer
+from vectorphile.optim.adam import _to_np, _write_back, _vec_scale, _vec_add, _vec_sub
 
 
 class RMSprop(Optimizer):
@@ -19,16 +20,19 @@ class RMSprop(Optimizer):
             for p in group['params']:
                 if p.grad is None:
                     continue
-                g = p.grad._data.copy()
+                g, sh = _to_np(p.grad._data)
+                g = g[:]
+                p_flat, p_sh = _to_np(p._data)
                 if wd != 0:
-                    g += wd * p._data
+                    g = _vec_add(g, _vec_scale(p_flat, wd))
                 pid = id(p)
+                n = len(g)
                 if pid not in self.state:
-                    self.state[pid] = {'sq': np.zeros_like(p._data), 'buf': np.zeros_like(p._data)}
+                    self.state[pid] = {'sq': [0.0] * n, 'buf': [0.0] * n}
                 s = self.state[pid]
-                s['sq'] = alpha * s['sq'] + (1 - alpha) * g**2
-                step = g / (np.sqrt(s['sq']) + eps)
+                s['sq'] = [alpha * s['sq'][i] + (1 - alpha) * g[i] * g[i] for i in range(n)]
+                step_v = [g[i] / (_math.sqrt(max(s['sq'][i], 0.0)) + eps) for i in range(n)]
                 if mu != 0:
-                    s['buf'] = mu * s['buf'] + step
-                    step = s['buf']
-                p._data -= lr * step
+                    s['buf'] = _vec_add(_vec_scale(s['buf'], mu), step_v)
+                    step_v = s['buf']
+                _write_back(p, _vec_sub(p_flat, _vec_scale(step_v, lr)), p_sh)

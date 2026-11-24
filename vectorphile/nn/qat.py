@@ -14,11 +14,12 @@ Usage::
     model = convert_qat(model)   # now uses INT8 weights
 """
 from __future__ import annotations
-import numpy as np
 from typing import Tuple, Optional
 from vectorphile.nn.module import Module
 from vectorphile.core.tensor import Tensor
 
+import math as _math_qat
+import random as _random_qat
 
 # ── Observer ──────────────────────────────────────────────────────────────────
 
@@ -60,8 +61,8 @@ class MovingAverageMinMaxObserver(Module):
         r_min = self._min if self._initialized else -1.0
         r_max = self._max if self._initialized else 1.0
         scale = (r_max - r_min) / (q_max - q_min + 1e-9)
-        zero_point = int(np.round(q_min - r_min / (scale + 1e-9)))
-        zero_point = int(np.clip(zero_point, q_min, q_max))
+        zero_point = int(round(q_min - r_min / (scale + 1e-9)))
+        zero_point = int(max(q_min, min(q_max, zero_point)))
         return scale, zero_point
 
 
@@ -111,22 +112,24 @@ class FakeQuantize(Module):
             r_min = d.min()
             r_max = d.max()
 
+        from vectorphile._core.ndarray import array as _nd_fq
+        def _fl_fq(dd):
+            if hasattr(dd, 'to_flat_list'): return dd.to_flat_list()
+            return list(dd)
+        df = _fl_fq(d); dsh = d.shape if hasattr(d, 'shape') else (len(df),)
+        r_min_v = r_min if isinstance(r_min, (int, float)) else min(_fl_fq(r_min))
+        r_max_v = r_max if isinstance(r_max, (int, float)) else max(_fl_fq(r_max))
         if self.symmetric:
-            abs_max = np.maximum(np.abs(r_min), np.abs(r_max))
+            abs_max = max(abs(r_min_v), abs(r_max_v))
             scale = abs_max / (q_max + 1e-9)
             zp = 0
         else:
-            scale = (r_max - r_min) / (q_max - q_min + 1e-9)
-            zp = q_min - r_min / (scale + 1e-9)
-
-        # Quantize
-        q = np.clip(np.round(d / (scale + 1e-9) + zp), q_min, q_max)
-        # Dequantize (fake — still float32)
-        x_fq = (q - zp) * scale
-
-        # STE: in backward, treat as identity (grad passes through)
-        # We store x_fq as output but the grad will pass to x unchanged
-        out = Tensor(x_fq.astype(np.float32))
+            scale = (r_max_v - r_min_v) / (q_max - q_min + 1e-9)
+            zp = q_min - r_min_v / (scale + 1e-9)
+        # Quantize + dequantize
+        x_fq_fl = [max(float(q_min), min(float(q_max), round(v / (scale + 1e-9) + zp))) for v in df]
+        x_fq_fl = [(v - zp) * scale for v in x_fq_fl]
+        out = Tensor(_nd_fq(x_fq_fl).reshape(dsh))
         # STE: copy grad_fn so backward gets identity gradient
         if x.requires_grad:
             out.requires_grad = True
@@ -155,13 +158,15 @@ class QATLinear(Module):
     def __init__(self, in_features: int, out_features: int,
                  weight_bits: int = 8, act_bits: int = 8, bias: bool = True):
         super().__init__()
-        s = np.sqrt(2.0 / in_features)
-        self.weight = Tensor(np.random.randn(in_features, out_features).astype(np.float32) * s)
+        from vectorphile._core.ndarray import array as _nd_qatl, zeros as _nd_qatl_z
+        s = _math_qat.sqrt(2.0 / in_features)
+        self.weight = Tensor(_nd_qatl([_math_qat.sqrt(-2*_math_qat.log(max(_random_qat.random(),1e-10)))*_math_qat.cos(2*_math_qat.pi*_random_qat.random())*s
+                                       for _ in range(in_features*out_features)]).reshape((in_features, out_features)))
         self.weight.requires_grad = True
         self._parameters['weight'] = self.weight
         self._bias = None
         if bias:
-            self._bias = Tensor(np.zeros(out_features, dtype=np.float32))
+            self._bias = Tensor(_nd_qatl_z(out_features, dtype='float32'))
             self._bias.requires_grad = True
             self._parameters['bias'] = self._bias
 
@@ -198,14 +203,16 @@ class QATConv2d(Module):
         super().__init__()
         self.stride = stride
         self.padding = padding
-        s = np.sqrt(2.0 / (in_channels * kernel_size ** 2))
-        self.weight = Tensor(
-            np.random.randn(out_channels, in_channels, kernel_size, kernel_size).astype(np.float32) * s)
+        from vectorphile._core.ndarray import array as _nd_qatc, zeros as _nd_qatc_z
+        s = _math_qat.sqrt(2.0 / (in_channels * kernel_size ** 2))
+        n_wq = out_channels * in_channels * kernel_size * kernel_size
+        self.weight = Tensor(_nd_qatc([_math_qat.sqrt(-2*_math_qat.log(max(_random_qat.random(),1e-10)))*_math_qat.cos(2*_math_qat.pi*_random_qat.random())*s
+                                       for _ in range(n_wq)]).reshape((out_channels, in_channels, kernel_size, kernel_size)))
         self.weight.requires_grad = True
         self._parameters['weight'] = self.weight
         self._bias = None
         if bias:
-            self._bias = Tensor(np.zeros(out_channels, dtype=np.float32))
+            self._bias = Tensor(_nd_qatc_z(out_channels, dtype='float32'))
             self._bias.requires_grad = True
             self._parameters['bias'] = self._bias
 

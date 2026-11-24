@@ -1,133 +1,238 @@
-"""XGBoost-style gradient boosting (pure NumPy)."""
-import numpy as np
+"""XGBoost-style gradient boosting — pure Python."""
+import math
+import random as _random
 from typing import Optional
-from vectorphile.ml.tree import DecisionTreeRegressor
+
+
+def _col(X, j):
+    return [X[i][j] for i in range(len(X))]
+
+
+def _uniq_sorted(seq):
+    return sorted(set(seq))
+
+
+class _XGBTree:
+    def __init__(self, max_depth=6, min_child_weight=1.0, reg_lambda=1.0,
+                 reg_alpha=0.0, subsample_feats=1.0, random_state=None):
+        self.max_depth = max_depth
+        self.min_child_weight = min_child_weight
+        self.reg_lambda = reg_lambda
+        self.reg_alpha = reg_alpha
+        self.subsample_feats = subsample_feats
+        self.random_state = random_state
+
+    def _gain(self, g_L, h_L, g_R, h_R):
+        lam = self.reg_lambda
+
+        def val(g, h):
+            return g ** 2 / (h + lam)
+
+        return 0.5 * (val(g_L, h_L) + val(g_R, h_R) - val(g_L + g_R, h_L + h_R))
+
+    def _leaf_weight(self, g, h):
+        return -g / (h + self.reg_lambda)
+
+    def fit(self, X, grad, hess):
+        n, p = len(X), len(X[0])
+        self._p = p
+        rng = _random.Random(self.random_state)
+        if self.subsample_feats < 1.0:
+            nf = max(1, int(p * self.subsample_feats))
+            self._feat_idxs = rng.sample(range(p), nf)
+        else:
+            self._feat_idxs = list(range(p))
+        self.tree = self._build(list(range(n)), X, grad, hess, 0)
+        return self
+
+    def _build(self, idxs, X, grad, hess, depth):
+        g = sum(grad[i] for i in idxs)
+        h = sum(hess[i] for i in idxs)
+        if depth >= self.max_depth or h < self.min_child_weight or len(idxs) <= 1:
+            return {'leaf': True, 'value': self._leaf_weight(g, h)}
+        best_gain, best_feat, best_thresh = -float('inf'), None, None
+        for feat in self._feat_idxs:
+            vals = sorted(set(float(X[i][feat]) for i in idxs))
+            for t in range(len(vals) - 1):
+                thresh = (vals[t] + vals[t + 1]) / 2
+                left = [i for i in idxs if float(X[i][feat]) <= thresh]
+                right = [i for i in idxs if float(X[i][feat]) > thresh]
+                h_L = sum(hess[i] for i in left)
+                h_R = sum(hess[i] for i in right)
+                if h_L < self.min_child_weight or h_R < self.min_child_weight:
+                    continue
+                g_L = sum(grad[i] for i in left)
+                g_R = sum(grad[i] for i in right)
+                gain = self._gain(g_L, h_L, g_R, h_R)
+                if gain > best_gain:
+                    best_gain, best_feat, best_thresh = gain, feat, thresh
+        if best_feat is None:
+            return {'leaf': True, 'value': self._leaf_weight(g, h)}
+        left = [i for i in idxs if float(X[i][best_feat]) <= best_thresh]
+        right = [i for i in idxs if float(X[i][best_feat]) > best_thresh]
+        return {
+            'leaf': False,
+            'feat': best_feat,
+            'thresh': best_thresh,
+            'left': self._build(left, X, grad, hess, depth + 1),
+            'right': self._build(right, X, grad, hess, depth + 1),
+        }
+
+    def _predict_one(self, x, node):
+        if node['leaf']:
+            return node['value']
+        if float(x[node['feat']]) <= node['thresh']:
+            return self._predict_one(x, node['left'])
+        return self._predict_one(x, node['right'])
+
+    def predict(self, X):
+        return [self._predict_one(x, self.tree) for x in X]
 
 
 class XGBRegressor:
-    """Extreme Gradient Boosting Regressor with second-order statistics."""
-    def __init__(self, n_estimators=100, learning_rate=0.1, max_depth=6,
-                 min_child_weight=1, gamma=0.0, reg_alpha=0.0, reg_lambda=1.0,
-                 subsample=1.0, colsample_bytree=1.0, random_state=None):
+    def __init__(self, n_estimators=100, learning_rate=0.3, max_depth=6,
+                 min_child_weight=1.0, subsample=1.0, colsample_bytree=1.0,
+                 reg_lambda=1.0, reg_alpha=0.0, random_state=None, n_jobs=None,
+                 gamma=0.0, eval_metric=None):
         self.n_estimators = n_estimators
         self.learning_rate = learning_rate
         self.max_depth = max_depth
         self.min_child_weight = min_child_weight
-        self.gamma = gamma
-        self.reg_alpha = reg_alpha
-        self.reg_lambda = reg_lambda
         self.subsample = subsample
         self.colsample_bytree = colsample_bytree
+        self.reg_lambda = reg_lambda
+        self.reg_alpha = reg_alpha
         self.random_state = random_state
-        self.estimators_ = []
-        self.base_score_: float = 0.0
 
-    def fit(self, X, y, eval_set=None, verbose=False) -> 'XGBRegressor':
-        if self.random_state is not None:
-            np.random.seed(self.random_state)
-        X, y = np.array(X, dtype=float), np.array(y, dtype=float)
-        self.base_score_ = y.mean()
-        F = np.full(len(y), self.base_score_)
-        n, p = X.shape
-        for i in range(self.n_estimators):
-            # MSE gradient = -2*(y-F), hessian = 2 (constant for MSE)
-            g = -(y - F)  # negative gradient
-            h = np.ones_like(g)
-            # Subsample rows
+    def fit(self, X, y, eval_set=None, verbose=False):
+        X2 = [[float(v) for v in row] for row in X]
+        y2 = [float(v) for v in y]
+        n = len(y2)
+        self.base_score_ = sum(y2) / n
+        F = [self.base_score_] * n
+        rng = _random.Random(self.random_state)
+        self.estimators_ = []
+        for _ in range(self.n_estimators):
+            # MSE gradient / hessian
+            grad = [F[i] - y2[i] for i in range(n)]
+            hess = [1.0] * n
             if self.subsample < 1.0:
-                row_idx = np.random.choice(n, int(n * self.subsample), replace=False)
-                Xs, gs, hs = X[row_idx], g[row_idx], h[row_idx]
+                n_sub = max(1, int(n * self.subsample))
+                idxs = rng.sample(range(n), n_sub)
+                Xs = [X2[i] for i in idxs]
+                gs = [grad[i] for i in idxs]
+                hs = [hess[i] for i in idxs]
             else:
-                Xs, gs, hs = X, g, h
-            # Subsample cols
-            if self.colsample_bytree < 1.0:
-                col_idx = np.random.choice(p, int(p * self.colsample_bytree), replace=False)
-                Xs = Xs[:, col_idx]
-            # Weight: -g/h for leaf values
-            w = -gs / (hs + self.reg_lambda)
-            tree = DecisionTreeRegressor(max_depth=self.max_depth)
-            tree.fit(Xs, w)
-            update = tree.predict(X[:, col_idx] if self.colsample_bytree < 1.0 else X)
-            F += self.learning_rate * update
-            self.estimators_.append((tree, col_idx if self.colsample_bytree < 1.0 else None))
-            if verbose and (i + 1) % 10 == 0:
-                loss = np.mean((y - F)**2)
-                print(f'[{i+1}] train-rmse={np.sqrt(loss):.4f}')
+                Xs, gs, hs = X2, grad, hess
+            tree = _XGBTree(
+                max_depth=self.max_depth,
+                min_child_weight=self.min_child_weight,
+                reg_lambda=self.reg_lambda,
+                reg_alpha=self.reg_alpha,
+                subsample_feats=self.colsample_bytree,
+                random_state=rng.randint(0, 2**31),
+            )
+            tree.fit(Xs, gs, hs)
+            preds = tree.predict(X2)
+            for i in range(n):
+                F[i] += self.learning_rate * preds[i]
+            self.estimators_.append(tree)
         return self
 
-    def predict(self, X) -> np.ndarray:
-        X = np.array(X, dtype=float)
-        F = np.full(len(X), self.base_score_)
-        for tree, col_idx in self.estimators_:
-            Xs = X[:, col_idx] if col_idx is not None else X
-            F += self.learning_rate * tree.predict(Xs)
+    def predict(self, X):
+        X2 = [[float(v) for v in row] for row in X]
+        n = len(X2)
+        F = [self.base_score_] * n
+        for tree in self.estimators_:
+            preds = tree.predict(X2)
+            for i in range(n):
+                F[i] += self.learning_rate * preds[i]
         return F
 
-    def score(self, X, y) -> float:
-        y = np.array(y, dtype=float)
-        pred = self.predict(X)
-        ss_res = np.sum((y - pred)**2)
-        ss_tot = np.sum((y - y.mean())**2)
+    def score(self, X, y):
+        preds = self.predict(X)
+        y2 = [float(v) for v in y]
+        mu = sum(y2) / len(y2)
+        ss_res = sum((a - b) ** 2 for a, b in zip(y2, preds))
+        ss_tot = sum((v - mu) ** 2 for v in y2)
         return float(1 - ss_res / (ss_tot + 1e-12))
 
 
 class XGBClassifier:
-    """Extreme Gradient Boosting Classifier."""
-    def __init__(self, n_estimators=100, learning_rate=0.1, max_depth=6,
-                 reg_lambda=1.0, subsample=1.0, random_state=None):
+    def __init__(self, n_estimators=100, learning_rate=0.3, max_depth=6,
+                 min_child_weight=1.0, subsample=1.0, colsample_bytree=1.0,
+                 reg_lambda=1.0, reg_alpha=0.0, random_state=None, n_jobs=None,
+                 use_label_encoder=False, eval_metric=None):
         self.n_estimators = n_estimators
         self.learning_rate = learning_rate
         self.max_depth = max_depth
-        self.reg_lambda = reg_lambda
+        self.min_child_weight = min_child_weight
         self.subsample = subsample
+        self.colsample_bytree = colsample_bytree
+        self.reg_lambda = reg_lambda
+        self.reg_alpha = reg_alpha
         self.random_state = random_state
-        self.classes_: Optional[np.ndarray] = None
-        self.estimators_ = []
-        self.base_score_: Optional[np.ndarray] = None
 
-    def _sigmoid(self, x):
-        return 1.0 / (1.0 + np.exp(-np.clip(x, -500, 500)))
+    @staticmethod
+    def _softmax(scores):
+        mx = max(scores)
+        exps = [math.exp(s - mx) for s in scores]
+        total = sum(exps)
+        return [e / total for e in exps]
 
-    def fit(self, X, y) -> 'XGBClassifier':
-        if self.random_state is not None:
-            np.random.seed(self.random_state)
-        X, y = np.array(X, dtype=float), np.array(y)
-        self.classes_ = np.unique(y)
+    def fit(self, X, y, eval_set=None, verbose=False):
+        X2 = [[float(v) for v in row] for row in X]
+        y2 = list(y)
+        self.classes_ = _uniq_sorted(y2)
         K = len(self.classes_)
-        n = len(X)
-        y_ohe = np.zeros((n, K))
-        for i, c in enumerate(self.classes_):
-            y_ohe[:, i] = (y == c).astype(float)
-        self.base_score_ = np.log(y_ohe.mean(axis=0) + 1e-12)
-        F = np.tile(self.base_score_, (n, 1)).copy()
-        self.estimators_ = []
+        n = len(y2)
+        rng = _random.Random(self.random_state)
+        F = [[0.0] * n for _ in range(K)]
+        self.estimators_ = [[] for _ in range(K)]
         for _ in range(self.n_estimators):
-            probs = self._sigmoid(F)
-            probs /= probs.sum(axis=1, keepdims=True)
-            group = []
+            probs = [self._softmax([F[k][i] for k in range(K)]) for i in range(n)]
             for k in range(K):
-                g = -(y_ohe[:, k] - probs[:, k])
-                h = probs[:, k] * (1 - probs[:, k]) + 1e-6
-                w = -g / (h + self.reg_lambda)
-                tree = DecisionTreeRegressor(max_depth=self.max_depth)
-                tree.fit(X, w)
-                F[:, k] += self.learning_rate * tree.predict(X)
-                group.append(tree)
-            self.estimators_.append(group)
+                y_k = [1.0 if y2[i] == self.classes_[k] else 0.0 for i in range(n)]
+                grad = [probs[i][k] - y_k[i] for i in range(n)]
+                hess = [max(2 * probs[i][k] * (1 - probs[i][k]), 1e-6) for i in range(n)]
+                if self.subsample < 1.0:
+                    n_sub = max(1, int(n * self.subsample))
+                    idxs = rng.sample(range(n), n_sub)
+                    Xs = [X2[i] for i in idxs]
+                    gs = [grad[i] for i in idxs]
+                    hs = [hess[i] for i in idxs]
+                else:
+                    Xs, gs, hs = X2, grad, hess
+                tree = _XGBTree(
+                    max_depth=self.max_depth,
+                    min_child_weight=self.min_child_weight,
+                    reg_lambda=self.reg_lambda,
+                    subsample_feats=self.colsample_bytree,
+                    random_state=rng.randint(0, 2**31),
+                )
+                tree.fit(Xs, gs, hs)
+                preds = tree.predict(X2)
+                for i in range(n):
+                    F[k][i] += self.learning_rate * preds[i]
+                self.estimators_[k].append(tree)
         return self
 
-    def predict_proba(self, X) -> np.ndarray:
-        X = np.array(X, dtype=float)
-        F = np.tile(self.base_score_, (len(X), 1)).copy()
-        for group in self.estimators_:
-            for k, tree in enumerate(group):
-                F[:, k] += self.learning_rate * tree.predict(X)
-        probs = self._sigmoid(F)
-        probs /= probs.sum(axis=1, keepdims=True)
-        return probs
+    def predict_proba(self, X):
+        X2 = [[float(v) for v in row] for row in X]
+        n = len(X2)
+        K = len(self.classes_)
+        F = [[0.0] * n for _ in range(K)]
+        for k in range(K):
+            for tree in self.estimators_[k]:
+                preds = tree.predict(X2)
+                for i in range(n):
+                    F[k][i] += self.learning_rate * preds[i]
+        return [self._softmax([F[k][i] for k in range(K)]) for i in range(n)]
 
-    def predict(self, X) -> np.ndarray:
-        return self.classes_[self.predict_proba(X).argmax(axis=1)]
+    def predict(self, X):
+        proba = self.predict_proba(X)
+        return [self.classes_[row.index(max(row))] for row in proba]
 
-    def score(self, X, y) -> float:
-        return float(np.mean(self.predict(X) == np.array(y)))
+    def score(self, X, y):
+        preds = self.predict(X)
+        return sum(a == b for a, b in zip(preds, y)) / len(y)

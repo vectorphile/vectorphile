@@ -1,61 +1,68 @@
-"""Evaluation metrics."""
-import numpy as np
-from typing import Optional
+"""Evaluation metrics — pure Python."""
+import math
+from typing import List, Optional
+from vectorphile.ml._np_compat import to_array as _ta
+
+
+def _uniq_sorted(seq):
+    return sorted(set(seq))
 
 
 def accuracy_score(y_true, y_pred, normalize=True) -> float:
-    y_true, y_pred = np.array(y_true), np.array(y_pred)
-    correct = (y_true == y_pred).sum()
-    return float(correct / len(y_true)) if normalize else int(correct)
+    yt, yp = list(y_true), list(y_pred)
+    correct = sum(1 for a, b in zip(yt, yp) if a == b)
+    return float(correct / len(yt)) if normalize else int(correct)
 
 
-def confusion_matrix(y_true, y_pred, labels=None) -> np.ndarray:
-    y_true, y_pred = np.array(y_true), np.array(y_pred)
-    classes = labels if labels is not None else np.unique(np.concatenate([y_true, y_pred]))
+def confusion_matrix(y_true, y_pred, labels=None):
+    yt, yp = list(y_true), list(y_pred)
+    classes = labels if labels is not None else _uniq_sorted(yt + yp)
     K = len(classes)
-    cm = np.zeros((K, K), dtype=int)
+    cm = [[0]*K for _ in range(K)]
     class_map = {c: i for i, c in enumerate(classes)}
-    for t, p in zip(y_true, y_pred):
-        cm[class_map[t], class_map[p]] += 1
-    return cm
+    for t, p in zip(yt, yp):
+        cm[class_map[t]][class_map[p]] += 1
+    return _ta(cm)
 
 
 def precision_score(y_true, y_pred, average='binary', labels=None, zero_division=0) -> float:
-    y_true, y_pred = np.array(y_true), np.array(y_pred)
-    classes = labels or np.unique(np.concatenate([y_true, y_pred]))
+    yt, yp = list(y_true), list(y_pred)
+    classes = labels or _uniq_sorted(yt + yp)
     precisions = []
     for c in classes:
-        tp = ((y_pred == c) & (y_true == c)).sum()
-        fp = ((y_pred == c) & (y_true != c)).sum()
+        tp = sum(1 for a, b in zip(yp, yt) if b == c and a == c)
+        fp = sum(1 for a, b in zip(yp, yt) if b != c and a == c)
         denom = tp + fp
         precisions.append(tp / denom if denom > 0 else zero_division)
     if average == 'micro':
-        tps = sum((y_pred == c) & (y_true == c) for c in classes).sum()
-        fps = sum((y_pred == c) & (y_true != c) for c in classes).sum()
+        tps = sum(1 for a, b in zip(yp, yt) if a == b)
+        fps = len(yt) - tps
         return float(tps / (tps + fps)) if (tps + fps) > 0 else zero_division
     if average == 'macro':
-        return float(np.mean(precisions))
+        return float(sum(precisions) / len(precisions))
     if average == 'weighted':
-        weights = [(y_true == c).sum() for c in classes]
-        return float(np.average(precisions, weights=weights))
-    return float(precisions[0]) if len(precisions) == 1 else float(precisions[-1])
+        weights = [sum(1 for y in yt if y == c) for c in classes]
+        total = sum(weights)
+        return float(sum(p*w for p,w in zip(precisions, weights)) / total) if total else zero_division
+    return float(precisions[-1]) if precisions else zero_division
 
 
 def recall_score(y_true, y_pred, average='binary', labels=None, zero_division=0) -> float:
-    y_true, y_pred = np.array(y_true), np.array(y_pred)
-    classes = labels or np.unique(np.concatenate([y_true, y_pred]))
+    yt, yp = list(y_true), list(y_pred)
+    classes = labels or _uniq_sorted(yt + yp)
     recalls = []
     for c in classes:
-        tp = ((y_pred == c) & (y_true == c)).sum()
-        fn = ((y_pred != c) & (y_true == c)).sum()
+        tp = sum(1 for a, b in zip(yp, yt) if b == c and a == c)
+        fn = sum(1 for a, b in zip(yp, yt) if b == c and a != c)
         denom = tp + fn
         recalls.append(tp / denom if denom > 0 else zero_division)
     if average == 'macro':
-        return float(np.mean(recalls))
+        return float(sum(recalls) / len(recalls))
     if average == 'weighted':
-        weights = [(y_true == c).sum() for c in classes]
-        return float(np.average(recalls, weights=weights))
-    return float(recalls[-1])
+        weights = [sum(1 for y in yt if y == c) for c in classes]
+        total = sum(weights)
+        return float(sum(r*w for r,w in zip(recalls, weights)) / total) if total else zero_division
+    return float(recalls[-1]) if recalls else zero_division
 
 
 def f1_score(y_true, y_pred, average='binary', labels=None, zero_division=0) -> float:
@@ -64,85 +71,113 @@ def f1_score(y_true, y_pred, average='binary', labels=None, zero_division=0) -> 
     return float(2 * p * r / (p + r)) if (p + r) > 0 else zero_division
 
 
-def roc_auc_score(y_true, y_score, average='macro') -> float:
-    y_true, y_score = np.array(y_true), np.array(y_score)
-    if y_score.ndim == 1:
-        return _roc_auc_binary(y_true, y_score)
-    classes = np.unique(y_true)
-    aucs = [_roc_auc_binary((y_true == c).astype(int), y_score[:, i]) for i, c in enumerate(classes)]
-    return float(np.mean(aucs))
-
-
 def _roc_auc_binary(y_true, y_score) -> float:
-    pos = y_true.sum()
-    neg = len(y_true) - pos
+    yt = list(y_true)
+    pairs = sorted(zip(y_score, yt), key=lambda x: -x[0])
+    pos = sum(yt)
+    neg = len(yt) - pos
     if pos == 0 or neg == 0:
         return 0.5
-    order = np.argsort(y_score)[::-1]
-    y_sorted = y_true[order]
-    tpr = np.cumsum(y_sorted) / pos
-    fpr = np.cumsum(1 - y_sorted) / neg
-    tpr = np.concatenate([[0], tpr])
-    fpr = np.concatenate([[0], fpr])
-    return float(np.trapz(tpr, fpr))
+    tpr_pts, fpr_pts = [0.0], [0.0]
+    tp = fp = 0
+    for _, label in pairs:
+        if label:
+            tp += 1
+        else:
+            fp += 1
+        tpr_pts.append(tp / pos)
+        fpr_pts.append(fp / neg)
+    auc = 0.0
+    for i in range(1, len(tpr_pts)):
+        auc += (fpr_pts[i] - fpr_pts[i-1]) * (tpr_pts[i] + tpr_pts[i-1]) / 2
+    return float(auc)
+
+
+def roc_auc_score(y_true, y_score, average='macro') -> float:
+    yt = list(y_true)
+    if not isinstance(y_score[0], (list, tuple)):
+        return _roc_auc_binary(yt, list(y_score))
+    classes = _uniq_sorted(yt)
+    aucs = [_roc_auc_binary([1 if v == c else 0 for v in yt],
+                             [row[i] for row in y_score])
+            for i, c in enumerate(classes)]
+    return float(sum(aucs) / len(aucs))
 
 
 def mse(y_true, y_pred) -> float:
-    y_true, y_pred = np.array(y_true, dtype=float), np.array(y_pred, dtype=float)
-    return float(np.mean((y_true - y_pred)**2))
+    yt = [float(v) for v in y_true]
+    yp = [float(v) for v in y_pred]
+    n = len(yt)
+    return sum((a-b)**2 for a,b in zip(yt,yp)) / n
 
 
 def rmse(y_true, y_pred) -> float:
-    return float(np.sqrt(mse(y_true, y_pred)))
+    return math.sqrt(mse(y_true, y_pred))
 
 
 def mae(y_true, y_pred) -> float:
-    y_true, y_pred = np.array(y_true, dtype=float), np.array(y_pred, dtype=float)
-    return float(np.mean(np.abs(y_true - y_pred)))
+    yt = [float(v) for v in y_true]
+    yp = [float(v) for v in y_pred]
+    return sum(abs(a-b) for a,b in zip(yt,yp)) / len(yt)
 
 
 def r2_score(y_true, y_pred) -> float:
-    y_true, y_pred = np.array(y_true, dtype=float), np.array(y_pred, dtype=float)
-    ss_res = np.sum((y_true - y_pred)**2)
-    ss_tot = np.sum((y_true - y_true.mean())**2)
+    yt = [float(v) for v in y_true]
+    yp = [float(v) for v in y_pred]
+    mu = sum(yt) / len(yt)
+    ss_res = sum((a-b)**2 for a,b in zip(yt,yp))
+    ss_tot = sum((a-mu)**2 for a in yt)
     return float(1 - ss_res / (ss_tot + 1e-12))
 
 
 def mean_absolute_percentage_error(y_true, y_pred) -> float:
-    y_true, y_pred = np.array(y_true, dtype=float), np.array(y_pred, dtype=float)
-    mask = y_true != 0
-    return float(np.mean(np.abs((y_true[mask] - y_pred[mask]) / y_true[mask])))
+    yt = [float(v) for v in y_true]
+    yp = [float(v) for v in y_pred]
+    pairs = [(a, b) for a, b in zip(yt, yp) if a != 0]
+    if not pairs:
+        return 0.0
+    return float(sum(abs((a-b)/a) for a,b in pairs) / len(pairs))
 
 
 def silhouette_score(X, labels) -> float:
-    X, labels = np.array(X, dtype=float), np.array(labels)
-    n = len(X)
-    unique_labels = np.unique(labels)
+    X2 = [[float(v) for v in row] for row in X]
+    lbls = list(labels)
+    n = len(X2)
+    p = len(X2[0]) if X2 else 0
+    unique_lbls = _uniq_sorted(lbls)
+
+    def dist(a, b):
+        return math.sqrt(sum((a[k]-b[k])**2 for k in range(p)))
+
     scores = []
     for i in range(n):
-        same = X[labels == labels[i]]
-        a = np.mean(np.linalg.norm(same - X[i], axis=1)) if len(same) > 1 else 0.0
+        same_idxs = [j for j in range(n) if j != i and lbls[j] == lbls[i]]
+        a = (sum(dist(X2[i], X2[j]) for j in same_idxs) / len(same_idxs)) if same_idxs else 0.0
         b_vals = []
-        for c in unique_labels:
-            if c == labels[i]:
+        for c in unique_lbls:
+            if c == lbls[i]:
                 continue
-            other = X[labels == c]
-            if len(other) > 0:
-                b_vals.append(np.mean(np.linalg.norm(other - X[i], axis=1)))
+            other = [j for j in range(n) if lbls[j] == c]
+            if other:
+                b_vals.append(sum(dist(X2[i], X2[j]) for j in other) / len(other))
         b = min(b_vals) if b_vals else 0.0
-        s = (b - a) / max(a, b) if max(a, b) > 0 else 0.0
-        scores.append(s)
-    return float(np.mean(scores))
+        mx = max(a, b)
+        scores.append((b - a) / mx if mx > 0 else 0.0)
+    return float(sum(scores) / n) if scores else 0.0
 
 
 def log_loss(y_true, y_pred, eps=1e-15) -> float:
-    y_true = np.array(y_true)
-    y_pred = np.clip(np.array(y_pred, dtype=float), eps, 1 - eps)
-    if y_pred.ndim == 1:
-        return float(-np.mean(y_true * np.log(y_pred) + (1 - y_true) * np.log(1 - y_pred)))
-    n = len(y_true)
-    classes = np.unique(y_true)
-    y_ohe = np.zeros((n, len(classes)))
-    for i, c in enumerate(classes):
-        y_ohe[:, i] = (y_true == c)
-    return float(-np.mean(np.sum(y_ohe * np.log(y_pred), axis=1)))
+    yt = list(y_true)
+    yp = list(y_pred)
+    if not isinstance(yp[0], (list, tuple)):
+        total = sum(-(t * math.log(max(min(float(p), 1-eps), eps)) +
+                      (1-t) * math.log(max(min(1-float(p), 1-eps), eps)))
+                    for t, p in zip(yt, yp))
+        return float(total / len(yt))
+    classes = _uniq_sorted(yt)
+    n = len(yt)
+    total = 0.0
+    for i in range(n):
+        ci = classes.index(yt[i])
+        total -= math.log(max(float(yp[i][ci]), eps))
+    return float(total / n)

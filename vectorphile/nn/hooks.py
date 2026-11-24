@@ -228,10 +228,8 @@ class GradientRecorder:
                 self._register(name, param)
 
     def _register(self, name: str, param):
-        import numpy as np
-
         def hook(grad):
-            self.gradients[name] = np.copy(grad) if hasattr(grad, 'copy') else grad
+            self.gradients[name] = grad
             return grad
 
         # Attach as a grad_fn hook if tensor has grad attribute

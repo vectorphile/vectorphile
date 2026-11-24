@@ -22,10 +22,70 @@ Usage::
     optimizer.zero_grad()
 """
 from __future__ import annotations
-import numpy as np
+import math as _math
 from typing import Dict, Iterable, List, Optional, Tuple
 from vectorphile.core.tensor import Tensor
+from vectorphile._core.ndarray import NDArray as _NDA, zeros as _nd_zeros, ones as _nd_ones
 
+
+def _nd_zeros_like(a):
+    from vectorphile._core.ndarray import array as _nd_arr
+    flat = [0.0] * (1 if not hasattr(a, 'shape') else _prod(a.shape))
+    return _nd_arr(flat, dtype='float32').reshape(a.shape if hasattr(a, 'shape') else (1,))
+
+
+def _nd_ones_like(a, val=1.0):
+    from vectorphile._core.ndarray import array as _nd_arr
+    flat = [val] * (1 if not hasattr(a, 'shape') else _prod(a.shape))
+    return _nd_arr(flat, dtype='float32').reshape(a.shape if hasattr(a, 'shape') else (1,))
+
+
+def _prod(shape):
+    r = 1
+    for s in shape: r *= s
+    return r
+
+
+def _nd_sign(a):
+    from vectorphile._core.ndarray import array as _nd_arr
+    flat = a.to_flat_list() if hasattr(a, 'to_flat_list') else list(a)
+    return _nd_arr([1.0 if v > 0 else (-1.0 if v < 0 else 0.0) for v in flat], dtype='float32').reshape(a.shape)
+
+
+def _nd_sqrt(a):
+    from vectorphile._core.ndarray import array as _nd_arr
+    flat = a.to_flat_list() if hasattr(a, 'to_flat_list') else list(a)
+    return _nd_arr([_math.sqrt(max(v, 0.0)) for v in flat], dtype='float32').reshape(a.shape)
+
+
+def _nd_clip(a, lo, hi):
+    from vectorphile._core.ndarray import array as _nd_arr
+    flat = a.to_flat_list() if hasattr(a, 'to_flat_list') else list(a)
+    return _nd_arr([max(lo, min(hi, v)) for v in flat], dtype='float32').reshape(a.shape)
+
+
+def _nd_maximum(a, b):
+    from vectorphile._core.ndarray import array as _nd_arr
+    if hasattr(a, 'to_flat_list'):
+        fa = a.to_flat_list(); sh = a.shape
+        if hasattr(b, 'to_flat_list'):
+            fb = b.to_flat_list()
+            return _nd_arr([max(x, y) for x, y in zip(fa, fb)], dtype='float32').reshape(sh)
+        return _nd_arr([max(v, float(b)) for v in fa], dtype='float32').reshape(sh)
+    fa = list(a); fb = b.to_flat_list() if hasattr(b, 'to_flat_list') else list(b)
+    sh = b.shape if hasattr(b, 'shape') else (len(fb),)
+    return _nd_arr([max(x, y) for x, y in zip(fa, fb)], dtype='float32').reshape(sh)
+
+
+def _nd_abs(a):
+    from vectorphile._core.ndarray import array as _nd_arr
+    flat = a.to_flat_list() if hasattr(a, 'to_flat_list') else list(a)
+    return _nd_arr([abs(v) for v in flat], dtype='float32').reshape(a.shape)
+
+
+def _nd_norm(a):
+    flat = a.to_flat_list() if hasattr(a, 'to_flat_list') else list(a)
+    return _math.sqrt(sum(v*v for v in flat))
 
 def _params(parameters) -> List[Tensor]:
     """Flatten parameters iterable to list."""
@@ -70,7 +130,7 @@ class Lion:
     def _get_state(self, param: Tensor) -> dict:
         pid = id(param)
         if pid not in self._state:
-            self._state[pid] = {'m': np.zeros_like(param._data)}
+            self._state[pid] = {'m': _nd_zeros_like(param._data)}
         return self._state[pid]
 
     def step(self) -> None:
@@ -83,7 +143,7 @@ class Lion:
             # Compute update direction
             c = self.beta1 * m + (1 - self.beta1) * g
             # Weight decay (decoupled)
-            update = np.sign(c) + self.weight_decay * param._data
+            update = _nd_sign(c) + self.weight_decay * param._data
             param._data -= self.lr * update
             # Update momentum
             st['m'] = self.beta2 * m + (1 - self.beta2) * g
@@ -137,20 +197,15 @@ class Sophia:
         pid = id(param)
         if pid not in self._state:
             self._state[pid] = {
-                'm': np.zeros_like(param._data),
-                'h': np.ones_like(param._data) * 0.01,   # init Hessian estimate
+                'm': _nd_zeros_like(param._data),
+                'h': _nd_ones_like(param._data, 0.01),
             }
         return self._state[pid]
 
-    def _hutchinson_estimate(self, param: Tensor) -> np.ndarray:
-        """Diagonal Hessian estimate via Hutchinson's trick.
-
-        Uses a Rademacher random vector u: Ĥ = u ⊙ ∇(g^T u)
-        Approximated here as g² (Gauss-Newton approximation).
-        """
+    def _hutchinson_estimate(self, param: Tensor):
+        """Diagonal Hessian estimate — Gauss-Newton approximation: diag(H) ≈ g²."""
         if param.grad is None:
-            return np.ones_like(param._data) * 0.01
-        # Gauss-Newton approximation: diag(H) ≈ g²
+            return _nd_ones_like(param._data, 0.01)
         return param.grad._data ** 2
 
     def step(self) -> None:
@@ -162,17 +217,13 @@ class Sophia:
             st = self._get_state(param)
             m = st['m']
             h = st['h']
-            # Update gradient momentum
             m_new = self.beta1 * m + (1 - self.beta1) * g
-            # Update Hessian estimate periodically
             if self._step_count % self.h_interval == 0:
                 h_hat = self._hutchinson_estimate(param)
                 h_new = self.beta2 * h + (1 - self.beta2) * h_hat
             else:
                 h_new = h
-            # Clipped update
-            update = np.clip(m_new / np.maximum(h_new, self.eps), -self.rho, self.rho)
-            # Weight decay
+            update = _nd_clip(m_new / _nd_maximum(h_new, self.eps), -self.rho, self.rho)
             param._data -= self.lr * (update + self.weight_decay * param._data)
             st['m'] = m_new
             st['h'] = h_new
@@ -218,10 +269,10 @@ class Adan:
         pid = id(param)
         if pid not in self._state:
             self._state[pid] = {
-                'm': np.zeros_like(param._data),   # 1st moment
-                'v': np.zeros_like(param._data),   # gradient diff EMA
-                'n': np.zeros_like(param._data),   # 2nd moment
-                'g_prev': np.zeros_like(param._data),  # previous gradient
+                'm': _nd_zeros_like(param._data),
+                'v': _nd_zeros_like(param._data),
+                'n': _nd_zeros_like(param._data),
+                'g_prev': _nd_zeros_like(param._data),
             }
         return self._state[pid]
 
@@ -233,34 +284,21 @@ class Adan:
             g = param.grad._data
             st = self._get_state(param)
             m, v, n, g_prev = st['m'], st['v'], st['n'], st['g_prev']
-
-            # Gradient difference (Nesterov correction)
             delta_g = g - g_prev
-
-            # Update moments
             m_new = self.beta1 * m + (1 - self.beta1) * g
             v_new = self.beta2 * v + (1 - self.beta2) * delta_g
-            # Combined direction for 2nd moment
             g_combined = g + self.beta2 * delta_g
             n_new = self.beta3 * n + (1 - self.beta3) * g_combined ** 2
-
-            # Bias correction
             bc1 = 1 - self.beta1 ** self._step
             bc2 = 1 - self.beta2 ** self._step
             bc3 = 1 - self.beta3 ** self._step
-
             m_hat = m_new / bc1
             v_hat = v_new / bc2
             n_hat = n_new / bc3
-
-            # Update
-            denom = np.sqrt(n_hat) + self.eps
+            denom = _nd_sqrt(n_hat) + self.eps
             update = (m_hat + self.beta2 * v_hat) / denom
-
-            # Weight decay (decoupled)
             param._data /= (1 + self.lr * self.weight_decay)
             param._data -= self.lr * update
-
             st['m'] = m_new; st['v'] = v_new; st['n'] = n_new
             st['g_prev'] = g.copy()
 
@@ -305,9 +343,9 @@ class CAME:
         pid = id(param)
         if pid not in self._state:
             self._state[pid] = {
-                'm': np.zeros_like(param._data),   # 1st moment
-                'u': np.zeros_like(param._data),   # 2nd moment (factorized)
-                'c': np.ones_like(param._data),    # confidence factor
+                'm': _nd_zeros_like(param._data),
+                'u': _nd_zeros_like(param._data),
+                'c': _nd_ones_like(param._data),
             }
         return self._state[pid]
 
@@ -319,35 +357,19 @@ class CAME:
             g = param.grad._data
             st = self._get_state(param)
             m, u, c = st['m'], st['u'], st['c']
-
-            # Gradient clipping via RMS
-            rms_g = np.sqrt((g**2).mean()) + self.eps2
+            rms_g = _math.sqrt(float((g**2).sum()) / _prod(g.shape)) + self.eps2
             g_norm = g / max(1.0, rms_g)
-
-            # Update 1st moment
             m_new = self.beta1 * m + (1 - self.beta1) * g_norm
-
-            # Update 2nd moment (Adafactor-style row/col factorization)
-            # For simplicity use diagonal (full factorization is memory-intensive to implement inline)
             u_new = self.beta2 * u + (1 - self.beta2) * g_norm**2
-
-            # Confidence factor: measures consistency of gradient direction
-            cos_sim = (m_new * g_norm).sum() / (
-                np.linalg.norm(m_new) * np.linalg.norm(g_norm) + self.eps2)
-            c_new = self.beta3 * c + (1 - self.beta3) * np.maximum(cos_sim, 0.0)
-
-            # Bias correction
+            cos_sim = float((m_new * g_norm).sum()) / (_nd_norm(m_new) * _nd_norm(g_norm) + self.eps2)
+            c_new = self.beta3 * c + (1 - self.beta3) * _nd_maximum(cos_sim, 0.0)
             m_hat = m_new / (1 - self.beta1**self._step)
             u_hat = u_new / (1 - self.beta2**self._step)
             c_hat = c_new / (1 - self.beta3**self._step)
-
-            # Confidence-modulated update
-            denom = np.sqrt(u_hat) + self.eps1
+            denom = _nd_sqrt(u_hat) + self.eps1
             update = c_hat * m_hat / denom
-
             if self.weight_decay > 0:
                 update += self.weight_decay * param._data
-
             param._data -= self.lr * update
             st['m'] = m_new; st['u'] = u_new; st['c'] = c_new
 
@@ -391,7 +413,7 @@ class Prodigy:
         self.params = _params(parameters)
         self.lr = lr
         self.beta1, self.beta2 = betas
-        self.beta3 = beta3 or np.sqrt(betas[1])
+        self.beta3 = beta3 or _math.sqrt(betas[1])
         self.eps = eps
         self.weight_decay = weight_decay
         self.lr_scale = lr_scale
@@ -408,15 +430,14 @@ class Prodigy:
         pid = id(param)
         if pid not in self._state:
             self._state[pid] = {
-                'm': np.zeros_like(param._data),
-                'v': np.zeros_like(param._data),
-                's': np.zeros_like(param._data),   # sum for D numerator
+                'm': _nd_zeros_like(param._data),
+                'v': _nd_zeros_like(param._data),
+                's': _nd_zeros_like(param._data),
             }
         return self._state[pid]
 
     def step(self) -> None:
         self._step += 1
-        # First pass: update D estimate
         d_num = 0.0
         d_den = 0.0
         for param in self.params:
@@ -424,20 +445,15 @@ class Prodigy:
                 continue
             g = param.grad._data
             st = self._get_state(param)
-            # Update v (2nd moment) temporarily for D estimate
             v = st['v']
             v_new = self.beta2 * v + (1 - self.beta2) * g**2
-            # D numerator: <g, θ₀ - θ> weighted by 1/sqrt(v)
             theta0 = self._theta0[id(param)]
-            d_num += float((g * (theta0 - param._data) / (np.sqrt(v_new) + self.eps)).sum())
-            d_den += float((np.abs(g) * np.abs(theta0 - param._data) / (np.sqrt(v_new) + self.eps)).sum() + 1e-9)
-
-        # Update D
+            denom = _nd_sqrt(v_new) + self.eps
+            d_num += float((g * (theta0 - param._data) / denom).sum())
+            d_den += float((_nd_abs(g) * _nd_abs(theta0 - param._data) / denom).sum() + 1e-9)
         d_candidate = max(self._D, d_num / (d_den + 1e-30))
         self._D = self.beta3 * self._D + (1 - self.beta3) * d_candidate
         effective_lr = self.lr * self._D * self.lr_scale
-
-        # Second pass: actual parameter updates
         for param in self.params:
             if param.grad is None:
                 continue
@@ -448,7 +464,7 @@ class Prodigy:
             v_new = self.beta2 * v + (1 - self.beta2) * g**2
             m_hat = m_new / (1 - self.beta1**self._step)
             v_hat = v_new / (1 - self.beta2**self._step)
-            update = m_hat / (np.sqrt(v_hat) + self.eps)
+            update = m_hat / (_nd_sqrt(v_hat) + self.eps)
             if self.weight_decay > 0:
                 update += self.weight_decay * param._data
             param._data -= effective_lr * update
@@ -507,10 +523,9 @@ class ScheduleFreeAdamW:
         pid = id(param)
         if pid not in self._state:
             self._state[pid] = {
-                'm': np.zeros_like(param._data),   # 1st moment
-                'v': np.zeros_like(param._data),   # 2nd moment
-                'z': param._data.copy(),            # optimizer iterate z
-                # x (Polyak average) = param._data itself during train
+                'm': _nd_zeros_like(param._data),
+                'v': _nd_zeros_like(param._data),
+                'z': param._data.copy(),
             }
         return self._state[pid]
 
@@ -567,7 +582,7 @@ class ScheduleFreeAdamW:
             v_hat = v_new / (1 - self.beta2**self._step)
 
             # AdamW update on z
-            z_new = z - lr_t * (m_hat / (np.sqrt(v_hat) + self.eps)
+            z_new = z - lr_t * (m_hat / (_nd_sqrt(v_hat) + self.eps)
                                   + self.weight_decay * z)
 
             # Polyak average: x = (1 - c) * x + c * z  (x stored in param._data)

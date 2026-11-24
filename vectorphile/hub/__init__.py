@@ -4,7 +4,7 @@ import os
 import json
 import pickle
 import hashlib
-import numpy as np
+import math
 from pathlib import Path
 from typing import Any, Dict, Optional
 
@@ -38,14 +38,18 @@ def save_model(model: Any, name: str, version: str = '1.0.0',
         'module': type(model).__module__,
         **(metadata or {}),
     }
-    # Save numpy arrays separately if model has params
+    # Save parameters separately if model has params
     if hasattr(model, 'parameters'):
         params = {}
         for i, p in enumerate(model.parameters()):
-            params[f'param_{i}'] = p._data if hasattr(p, '_data') else np.array(p)
+            d = p._data if hasattr(p, '_data') else p
+            flat = d.to_flat_list() if hasattr(d, 'to_flat_list') else list(d) if hasattr(d, '__iter__') else [float(d)]
+            sh = d.shape if hasattr(d, 'shape') else (len(flat),)
+            params[f'param_{i}'] = {'flat': flat, 'shape': list(sh)}
         if params:
-            np.savez_compressed(save_dir / 'params.npz', **params)
-            meta['has_npz_params'] = True
+            with open(save_dir / 'params.pkl', 'wb') as _pf:
+                pickle.dump(params, _pf, protocol=4)
+            meta['has_params'] = True
 
     with open(save_dir / 'metadata.json', 'w') as f:
         json.dump(meta, f, indent=2)
@@ -90,25 +94,36 @@ def load_checkpoint(path: str) -> Any:
 
 
 def save_weights(model: Any, path: str) -> None:
-    """Save only the weights/parameters of a model as .npz."""
+    """Save only the weights/parameters of a model."""
     if not hasattr(model, 'parameters'):
         raise AttributeError("Model does not have a parameters() method")
     params = {}
     for i, p in enumerate(model.parameters()):
-        params[f'param_{i}'] = p._data if hasattr(p, '_data') else np.array(p)
-    np.savez_compressed(path, **params)
+        d = p._data if hasattr(p, '_data') else p
+        flat = d.to_flat_list() if hasattr(d, 'to_flat_list') else list(d) if hasattr(d, '__iter__') else [float(d)]
+        sh = d.shape if hasattr(d, 'shape') else (len(flat),)
+        params[f'param_{i}'] = {'flat': flat, 'shape': list(sh)}
+    with open(path, 'wb') as f:
+        pickle.dump(params, f, protocol=4)
 
 
 def load_weights(model: Any, path: str) -> None:
     """Load weights into an existing model (in-place)."""
     if not hasattr(model, 'parameters'):
         raise AttributeError("Model does not have a parameters() method")
-    data = np.load(path)
+    with open(path, 'rb') as f:
+        data = pickle.load(f)
+    from vectorphile._core.ndarray import array as _nd_array
     params = list(model.parameters())
     for i, p in enumerate(params):
         key = f'param_{i}'
         if key in data and hasattr(p, '_data'):
-            p._data[:] = data[key]
+            entry = data[key]
+            if isinstance(entry, dict):
+                p._data = _nd_array(entry['flat'], dtype='float32').reshape(tuple(entry['shape']))
+            else:
+                flat = entry.to_flat_list() if hasattr(entry, 'to_flat_list') else list(entry)
+                p._data = _nd_array(flat, dtype='float32')
 
 
 # ── Registry / listing ────────────────────────────────────────────────────────
@@ -221,8 +236,11 @@ def model_card(model: Any, name: str = '', description: str = '',
     if description:
         lines.append(f"\n## Description\n{description}")
     if hasattr(model, 'parameters'):
-        total = sum(p._data.size if hasattr(p, '_data') else np.array(p).size
-                    for p in model.parameters())
+        def _param_size(p):
+            d = p._data if hasattr(p, '_data') else p
+            sh = d.shape if hasattr(d, 'shape') else (1,)
+            return math.prod(sh) if sh else 1
+        total = sum(_param_size(p) for p in model.parameters())
         lines.append(f"\n**Parameters:** {total:,}")
     if metrics:
         lines.append("\n## Metrics")
